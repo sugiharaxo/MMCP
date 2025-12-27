@@ -7,9 +7,15 @@ name = "mmcp"
 version = "0.1.0"
 description = "Modular Media Control Plane - A lightweight, agentic media server control system"
 readme = "README.md"
-requires-python = "==3.10.*"
+requires-python = ">=3.10"
 dependencies = [
+    "curl-cffi>=0.5.0",
+    "fastapi>=0.104.0",
+    "instructor>=0.4.0",
+    "litellm>=1.0.0",
     "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "uvicorn[standard]>=0.24.0",
 ]
 
 [project.optional-dependencies]
@@ -17,6 +23,9 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.7.0",
     "pre-commit>=3.5.0",
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-mock>=3.12.0",
 ]
 
 [tool.ruff]
@@ -71,12 +80,15 @@ module = [
 ]
 ignore_missing_imports = true
 
-# [tool.pytest.ini_options]
-# Uncomment when adding tests
-# asyncio_mode = "auto"
-# testpaths = ["tests"]
-# python_files = ["test_*.py"]
-# python_classes = ["Test*"]
-# python_functions = ["test_*"]
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
 
+[tool.setuptools]
+packages = ["app"]
 
+[tool.setuptools.package-data]
+"app" = ["../static/*"]
