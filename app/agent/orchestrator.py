@@ -223,7 +223,7 @@ Use tools when you need specific information or actions. When you have enough in
             # Could implement caching based on result.ttl if needed
 
             # Truncate if needed (Safety Fuse approach)
-            truncated_data = ContextPruner.truncate_provider_data(data, provider_key)
+            truncated_data = ContextPruner.truncate_provider_data(data, provider_key, settings)
 
             # Record success
             self.health.record_success(provider_key)

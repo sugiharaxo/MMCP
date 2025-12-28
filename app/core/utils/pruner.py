@@ -3,7 +3,7 @@
 import json
 from typing import Any
 
-from app.core.config import settings
+from app.core.config import Settings
 from app.core.logger import logger
 
 
@@ -11,7 +11,9 @@ class ContextPruner:
     """Context truncation utility with structural pruning."""
 
     @staticmethod
-    def _prune_dict(data: Any, max_chars: int, current_size: int = 0) -> tuple[Any, int]:
+    def _prune_dict(
+        data: Any, max_chars: int, current_size: int = 0, settings: Settings | None = None
+    ) -> tuple[Any, int]:
         """
         Recursively prune dictionary/list to fit within character limit.
 
@@ -22,10 +24,16 @@ class ContextPruner:
             data: The data structure to prune (dict, list, or primitive).
             max_chars: Maximum character count allowed.
             current_size: Current character count (for tracking).
+            settings: Settings object with truncation configuration.
 
         Returns:
             Tuple of (pruned_data, estimated_size).
         """
+        if settings is None:
+            from app.core.config import settings as global_settings
+
+            settings = global_settings
+
         # Base case: primitive types
         if isinstance(data, (str, int, float, bool, type(None))):
             str_repr = str(data)
@@ -46,11 +54,17 @@ class ContextPruner:
                     pruned_list.append(truncated_marker)
                     size += truncated_size
                     break
-                pruned_item, size = ContextPruner._prune_dict(item, max_chars, size)
-                pruned_list.append(pruned_item)
-                if size > max_chars:
+                # Process item to get its size estimate
+                pruned_item, new_size = ContextPruner._prune_dict(item, max_chars, size, settings)
+                # Only add item if it doesn't exceed the limit
+                if new_size > max_chars:
+                    # Size would exceed limit, add truncation marker instead
                     pruned_list.append(truncated_marker)
+                    size += truncated_size
                     break
+                # Item fits, add it and update size
+                pruned_list.append(pruned_item)
+                size = new_size
             return pruned_list, size
 
         # Dict: recursively prune values
@@ -63,7 +77,7 @@ class ContextPruner:
                 if size > max_chars:
                     pruned_dict["... (truncated)"] = True
                     break
-                pruned_value, size = ContextPruner._prune_dict(value, max_chars, size)
+                pruned_value, size = ContextPruner._prune_dict(value, max_chars, size, settings)
                 pruned_dict[key] = pruned_value
                 if size > max_chars:
                     break
@@ -80,7 +94,9 @@ class ContextPruner:
         return data, current_size + len(str_repr)
 
     @staticmethod
-    def truncate_provider_data(data: dict[str, Any], provider_key: str) -> dict[str, Any]:
+    def truncate_provider_data(
+        data: dict[str, Any], provider_key: str, settings: Settings | None = None
+    ) -> dict[str, Any]:
         """
         Truncate provider data to prevent context bloat using the Safety Fuse approach.
 
@@ -90,10 +106,16 @@ class ContextPruner:
         Args:
             data: The provider data dictionary.
             provider_key: The provider key for logging.
+            settings: Settings object with truncation configuration.
 
         Returns:
             Truncated data dictionary (pruned recursively if over limit).
         """
+        if settings is None:
+            from app.core.config import settings as global_settings
+
+            settings = global_settings
+
         max_chars = settings.context_max_chars_per_provider
 
         # Quick size check first
@@ -102,7 +124,7 @@ class ContextPruner:
             return data
 
         # Apply structural pruning to bring it down to safe size
-        pruned_data, _ = ContextPruner._prune_dict(data, max_chars)
+        pruned_data, _ = ContextPruner._prune_dict(data, max_chars, settings=settings)
         pruned_json = json.dumps(pruned_data, default=str)
 
         # Actionable warning that helps developers/users fix the issue
