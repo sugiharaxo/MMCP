@@ -1,43 +1,16 @@
 # Modular Media Control Plane (MMCP)
 
-A lightweight, agentic media server control system designed to run efficiently on hardware ranging from high-end servers to Raspberry Pis.
+A lightweight, agentic system to interface with your local media server.
+The end goal is a chatbot that can allegedly do anything you'd like within reasonable legal boundaries and local jurisdictions
 
-## Quick Start
+Current tools:
 
-### The Fast Way (Recommended)
+- TMDB Search (IMDB for hipsters)
 
-1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/).
-2. Run `uv run main.py`.
-   _(This automatically creates an environment and installs everything.)_
+## Get Started
 
-### The Standard Way
+[Installation Instructions](./docs/installation.md)
 
-1. Download and install [Python 3.10+](https://www.python.org/downloads/). (Ensure "Add Python to PATH" is checked).
-2. Download and extract MMCP to your desired location
+## Developers & Contributors
 
-### Windows
-
-3. Open a Terminal in that folder and run:
-   ```powershell
-   python -m venv .venv
-   .\.venv\Scripts\activate
-   pip install -r requirements.txt
-   python main.py
-   ```
-
-### Linux
-
-3. Open your terminal and run:
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
-   python3 main.py
-   ```
-
-## Testing the Interface
-
-Once running, go to:
-
-- **Status Check:** `http://localhost:8000/`
-- **Interactive API Docs:** `http://localhost:8000/docs`
+[meow](./docs/devs.md)
