@@ -3,7 +3,6 @@
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,11 +10,11 @@ import pytest
 from app.agent.orchestrator import AgentOrchestrator
 from app.core.config import settings
 from app.core.health import HealthMonitor, ProviderState
-from app.core.plugin_interface import MMCPContextProvider
+from app.core.plugin_interface import ContextResponse
 from app.core.plugin_loader import PluginLoader
 
 
-class MockContextProvider(MMCPContextProvider):
+class MockContextProvider:
     """Mock context provider for testing."""
 
     def __init__(self, context_key: str, delay: float = 0.0, should_fail: bool = False):
@@ -27,15 +26,20 @@ class MockContextProvider(MMCPContextProvider):
     def context_key(self) -> str:
         return self._context_key
 
-    async def provide_context(self) -> dict[str, Any]:
+    async def provide_context(self, context) -> ContextResponse:
         """Simulate provider execution with optional delay and failure."""
+        _ = context  # Not used by test provider
         if self._delay > 0:
             await asyncio.sleep(self._delay)
 
         if self._should_fail:
             raise Exception("Provider failure")
 
-        return {"status": "ok", "provider": self._context_key}
+        return ContextResponse(
+            data={"status": "ok", "provider": self._context_key},
+            ttl=0,
+            provider_name=self._context_key,
+        )
 
     async def is_eligible(self, query: str) -> bool:
         """Always eligible unless query contains 'skip'."""
@@ -203,15 +207,20 @@ class TestContextAssembly:
     async def test_data_truncation(self):
         """Test Case 3: Provide massive JSON body. Verify truncation."""
 
-        class LargeDataProvider(MMCPContextProvider):
+        class LargeDataProvider:
             @property
             def context_key(self) -> str:
                 return "large_provider"
 
-            async def provide_context(self) -> dict[str, Any]:
+            async def provide_context(self, context) -> ContextResponse:
+                _ = context  # Not used by test provider
                 # Generate data larger than max_chars_per_provider
                 large_data = {"items": ["x" * 1000] * 10}  # ~10k chars
-                return large_data
+                return ContextResponse(
+                    data=large_data,
+                    ttl=0,
+                    provider_name="large_provider",
+                )
 
             async def is_eligible(self, _query: str) -> bool:
                 return True

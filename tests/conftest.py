@@ -34,12 +34,10 @@ def mock_tool():
     """Create a mock tool for testing."""
     from pydantic import BaseModel, Field
 
-    from app.core.plugin_interface import MMCPTool
-
     class MockInput(BaseModel):
         test_param: str = Field(..., description="Test parameter")
 
-    class MockTool(MMCPTool):
+    class MockTool:
         @property
         def name(self) -> str:
             return "mock_tool"
@@ -49,13 +47,17 @@ def mock_tool():
             return "A mock tool for testing"
 
         @property
+        def version(self) -> str:
+            return "1.0.0"
+
+        @property
         def input_schema(self) -> type[BaseModel]:
             return MockInput
 
         def is_available(self) -> bool:
             return True
 
-        async def execute(self, test_param: str) -> dict:
+        async def execute(self, _, test_param: str) -> dict:
             return {"result": f"Processed: {test_param}"}
 
     return MockTool()

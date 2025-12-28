@@ -2,6 +2,7 @@
 
 import asyncio
 import uuid
+from functools import reduce
 from typing import Any
 
 from app.agent.schemas import FinalResponse
@@ -16,7 +17,6 @@ from app.core.errors import (
 from app.core.health import HealthMonitor
 from app.core.llm import get_agent_decision
 from app.core.logger import logger
-from app.core.plugin_interface import ContextResponse
 from app.core.plugin_loader import PluginLoader
 from app.core.utils.pruner import ContextPruner
 
@@ -103,7 +103,7 @@ class AgentOrchestrator:
                 state_parts.append(f"Media State: {state['media_state']}")
             if state_parts:
                 state_desc = "\n".join(state_parts)
-                context_section = f"CONTEXT:\n{state_desc}\n\n"
+                context_section = f"CONTEXT:\n{state_desc}"
 
         return f"""You are MMCP (Modular Media Control Plane), an intelligent media assistant.
 You help users manage their media library, search for metadata, and handle downloads.
@@ -113,14 +113,16 @@ IDENTITY:
 - Use tools to fetch data before making recommendations.
 - If a tool fails, explain why to the user and try a different approach.
 
-{context_section}AVAILABLE TOOLS:
+{context_section}
+
+AVAILABLE TOOLS:
 {tool_desc}
 
 Use tools when you need specific information or actions. When you have enough information to answer the user, provide a FinalResponse with your answer."""
 
     def _get_response_model(self) -> type:
         """
-        Build the discriminated Union response model: FinalResponse | ToolSchema1 | ToolSchema2 | ...
+        Build the discriminated Union response model: Union[FinalResponse, ToolSchema1, ToolSchema2, ...]
 
         The LLM will return one of these types directly. We use isinstance() to route.
         """
@@ -134,11 +136,8 @@ Use tools when you need specific information or actions. When you have enough in
             return FinalResponse
 
         # Build Union: FinalResponse | Tool1 | Tool2 | ...
-        # Start with FinalResponse, then add all tool schemas
-        # Note: Using Union for dynamic runtime construction
-        ResponseModel: type = FinalResponse
-        for schema in tool_schemas:
-            ResponseModel = ResponseModel | schema  # type: ignore[assignment]
+        # Use reduce to construct Union dynamically
+        ResponseModel = reduce(lambda acc, schema: acc | schema, tool_schemas, FinalResponse)
 
         return ResponseModel
 
@@ -213,12 +212,15 @@ Use tools when you need specific information or actions. When you have enough in
                 logger.debug(f"Context provider '{provider_key}' is circuit-broken, skipping")
                 return provider_key, None
 
-            # Execute with per-provider timeout
+            # Execute with per-provider timeout using PluginContext facade
             timeout_seconds = settings.context_per_provider_timeout_ms / 1000.0
-            result = await asyncio.wait_for(provider.provide_context(), timeout=timeout_seconds)
+            plugin_context = self.loader.create_plugin_context()
+            result = await asyncio.wait_for(
+                provider.provide_context(plugin_context), timeout=timeout_seconds
+            )
 
-            # Handle both dict (backward compat) and ContextResponse
-            data = result.data if isinstance(result, ContextResponse) else result
+            # Extract data from ContextResponse
+            data = result.data
             # TTL is available in ContextResponse but not currently used (future enhancement)
             # Could implement caching based on result.ttl if needed
 
