@@ -6,7 +6,7 @@
 2. Clone this repository using git or [download](https://github.com/sugiharaxo/MMCP/archive/refs/heads/main.zip) and extract the zip to your desired location
 3. Open a terminal inside that folder, and run `uv run main.py`
 
-To interact with MMCP, find the IP of your server and go to http://<ip>:8000
+To interact with MMCP, find the IP of your server and go to `http://YOUR_IP:8000`
 
 ## Using Python
 
