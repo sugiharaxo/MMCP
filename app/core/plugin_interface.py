@@ -47,6 +47,19 @@ class MMCPTool(abc.ABC):
         """Optional versioning for the tool."""
         return "1.0.0"
 
+    def get_status_info(self) -> dict[str, Any]:
+        """
+        Return plugin status information for UI/API display.
+
+        This allows plugins to provide their own status information
+        without core code knowing about specific plugin details.
+        """
+        return {
+            "service_name": self.name.replace("_", " ").title(),
+            "configured": self.is_available(),
+            "description": getattr(self, "status_description", None),
+        }
+
     def is_available(self) -> bool:
         """
         Check if this tool is available (e.g., required API keys are configured).

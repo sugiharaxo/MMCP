@@ -1,4 +1,3 @@
-import os
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -159,11 +158,13 @@ async def general_exception_handler(_request: Request, exc: Exception) -> JSONRe
 
 @app.get("/api/v1/status")
 async def get_status():
-    """Health check endpoint with configuration status."""
+    """Health check endpoint with generic plugin status."""
+    plugin_statuses = loader.get_plugin_statuses()
+
     return {
         "status": "online",
         "llm_configured": bool(settings.llm_api_key or settings.llm_base_url),
-        "tmdb_configured": bool(os.getenv("TMDB_API_KEY")),
+        "plugins": plugin_statuses,  # Generic plugin status dictionary
         "loaded_plugins": list(loader.list_tools().keys()),
     }
 

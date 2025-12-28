@@ -2,6 +2,7 @@ import importlib
 import inspect
 import pkgutil
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -93,3 +94,15 @@ class PluginLoader:
     def list_tools(self) -> dict[str, str]:
         """Returns a dict of {name: description} for the Agent."""
         return {name: tool.description for name, tool in self.tools.items()}
+
+    def get_plugin_statuses(self) -> dict[str, dict[str, Any]]:
+        """
+        Aggregate status information from all loaded plugins.
+
+        This allows core code to get plugin status without knowing
+        specific plugin details - plugins register their own status.
+        """
+        statuses = {}
+        for name, tool in self.tools.items():
+            statuses[name] = tool.get_status_info()
+        return statuses

@@ -43,13 +43,7 @@
                 class="w-2 h-2 rounded-full bg-gray-600"
               ></span>
             </div>
-            <div class="flex items-center justify-between">
-              <span class="text-sm">TMDb</span>
-              <span
-                id="tmdb-status"
-                class="w-2 h-2 rounded-full bg-gray-600"
-              ></span>
-            </div>
+            <!-- Plugin status indicators will be added dynamically -->
           </div>
         </div>
 
@@ -121,7 +115,6 @@
       const messageInput = document.getElementById("message-input");
       const sendButton = document.getElementById("send-button");
       const llmStatus = document.getElementById("llm-status");
-      const tmdbStatus = document.getElementById("tmdb-status");
       const pluginsList = document.getElementById("plugins-list");
 
       // Load system status on page load
@@ -130,13 +123,36 @@
           const response = await fetch("/api/v1/status");
           const data = await response.json();
 
-          // Update status indicators
+          // Update LLM status
           llmStatus.className = data.llm_configured
             ? "w-2 h-2 rounded-full bg-green-500"
             : "w-2 h-2 rounded-full bg-red-500";
-          tmdbStatus.className = data.tmdb_configured
-            ? "w-2 h-2 rounded-full bg-green-500"
-            : "w-2 h-2 rounded-full bg-red-500";
+
+          // Clear existing plugin indicators
+          const existingIndicators =
+            document.querySelectorAll(".plugin-status");
+          existingIndicators.forEach((indicator) => indicator.remove());
+
+          // Add dynamic plugin status indicators
+          const statusContainer = document.getElementById("status-indicators");
+          for (const [pluginName, status] of Object.entries(data.plugins)) {
+            const indicator = document.createElement("div");
+            indicator.className =
+              "flex items-center justify-between plugin-status";
+
+            const serviceNameSpan = document.createElement("span");
+            serviceNameSpan.className = "text-sm";
+            serviceNameSpan.textContent = status.service_name;
+
+            const statusSpan = document.createElement("span");
+            statusSpan.className = `w-2 h-2 rounded-full ${
+              status.configured ? "bg-green-500" : "bg-red-500"
+            }`;
+
+            indicator.appendChild(serviceNameSpan);
+            indicator.appendChild(statusSpan);
+            statusContainer.appendChild(indicator);
+          }
 
           // Update plugins list
           if (data.loaded_plugins && data.loaded_plugins.length > 0) {
