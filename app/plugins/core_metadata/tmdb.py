@@ -57,13 +57,9 @@ class TMDbLookupTool(MMCPTool):
 
         Plugin manages its own status - no core knowledge needed.
         """
-        import os
-
-        api_key = os.getenv("TMDB_API_KEY")
-
         return {
             "service_name": "TMDb API",
-            "configured": bool(api_key),
+            "configured": self.is_available(),
             "description": self.status_description,
         }
 
