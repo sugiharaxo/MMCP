@@ -22,3 +22,4 @@ If you want to build with an AI, inject [these](llm-instructions.md) instruction
 - [ ] Decoupled Plugin Memory
 - [ ] Global Agent Memory
 - [ ] Dual context API, on every user message "pull" (already implemented), and an event bus to allow plugins to receive messages: "push"
+- [ ] Config API, when we have many plugins and want to register settings and whatnot. will also allow to set settings as sensitive which will filter their values in the system.
