@@ -105,6 +105,14 @@ class Settings(BaseSettings):
         default=2000,
         description="Maximum characters per provider response (truncated if exceeded)",
     )
+    context_max_string_length: int = Field(
+        default=200,
+        description="Maximum length for individual strings in provider data during truncation",
+    )
+    context_max_list_items: int = Field(
+        default=5,
+        description="Maximum number of items in lists during truncation",
+    )
     context_failure_threshold: int = Field(
         default=3,
         description="Number of consecutive failures before circuit breaker trips",

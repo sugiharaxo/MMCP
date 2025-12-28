@@ -206,16 +206,18 @@ Use tools when you need specific information or actions. When you have enough in
         # Base case: primitive types
         if isinstance(data, (str, int, float, bool, type(None))):
             str_repr = str(data)
-            if len(str_repr) > 200:  # Limit individual strings to 200 chars
-                return str_repr[:200] + "...", current_size + 203
+            max_string_len = settings.context_max_string_length
+            if len(str_repr) > max_string_len:
+                return str_repr[:max_string_len] + "...", current_size + max_string_len + 3
             return data, current_size + len(str_repr)
 
-        # List: limit to 5 items
+        # List: limit to configured number of items
         if isinstance(data, list):
             pruned_list = []
             size = current_size + 2  # Account for brackets
+            max_list_items = settings.context_max_list_items
             for idx, item in enumerate(data):
-                if idx >= 5:  # Limit to 5 items
+                if idx >= max_list_items:
                     pruned_list.append("... (truncated)")
                     size += 15
                     break
