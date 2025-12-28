@@ -32,10 +32,18 @@ class PluginLoader:
         """
         Create a safe PluginContext facade for plugins to use.
         """
+    def create_plugin_context(self) -> PluginContext:
+        """
+        Create a safe PluginContext facade for plugins to use.
+        """
+        import os
+        
         plugin_config = {
             "root_dir": str(settings.root_dir),
             "download_dir": str(settings.download_dir),
             "cache_dir": str(settings.cache_dir),
+            # Include API keys from environment
+            "TMDB_API_KEY": os.getenv("TMDB_API_KEY"),
         }
 
         server_info = {
