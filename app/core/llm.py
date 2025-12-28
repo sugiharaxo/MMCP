@@ -8,8 +8,7 @@ import litellm
 from litellm import acompletion
 
 from app.core.config import settings
-
-logger = logging.getLogger("mmcp.llm")
+from app.core.logger import logger
 
 # Hard-suppress LiteLLM verbose output to prevent "Provider List" spam
 litellm.set_verbose = False

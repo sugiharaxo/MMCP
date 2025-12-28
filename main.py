@@ -21,6 +21,7 @@ from app.core.errors import (
     ToolError,
     error_to_detail,
 )
+from app.core.logger import logger
 from app.core.plugin_loader import PluginLoader
 
 # 2. Setup Paths
@@ -135,9 +136,6 @@ async def general_exception_handler(_request: Request, exc: Exception) -> JSONRe
     )
 
     # Log the full error with trace_id
-    import logging
-
-    logger = logging.getLogger("mmcp.main")
     logger.error(
         f"Unhandled exception (trace_id={trace_id}): {exc}",
         exc_info=True,
@@ -210,9 +208,6 @@ async def chat_endpoint(message: str = Body(..., embed=True)) -> AgentResponse:
     except Exception as e:
         # Unexpected error - wrap and re-raise
         # This should rarely happen as orchestrator handles most errors
-        import logging
-
-        logger = logging.getLogger("mmcp.main")
         logger.error(
             f"Unexpected error in chat endpoint (trace_id={trace_id}): {e}",
             exc_info=True,

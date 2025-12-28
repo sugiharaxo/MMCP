@@ -4,6 +4,7 @@ from typing import Any
 from curl_cffi.requests import AsyncSession, RequestsError
 from pydantic import BaseModel, Field
 
+from app.core.context import MMCPContext
 from app.core.plugin_interface import MMCPTool
 
 
@@ -36,8 +37,14 @@ class TMDbLookupTool(MMCPTool):
         return TMDbMetadataInput
 
     def is_available(self) -> bool:
-        """Check if TMDb API key is configured."""
-        # Decoupled: core config doesn't need to know about this key
+        """
+        Check if TMDb API key is configured.
+
+        Note: This method doesn't have access to context, so it checks env directly.
+        The execute() method uses context-injected config for actual execution.
+        """
+        import os
+
         return bool(os.getenv("TMDB_API_KEY"))
 
     def _extract_year(self, date_str: str | None) -> int | None:
@@ -51,16 +58,25 @@ class TMDbLookupTool(MMCPTool):
             return None
 
     async def execute(
-        self, title: str, year: int | None = None, type: str = "movie"
+        self, context: MMCPContext, title: str, year: int | None = None, type: str = "movie"
     ) -> dict[str, Any]:
         """
         Queries TMDb API v3 for content metadata.
 
         Uses modern Bearer token authentication (API Read Access Token).
+        Context injection ensures tools never fetch config themselves - all config
+        comes from MMCPContext.static.config for security and testability.
         """
-        api_key = os.getenv("TMDB_API_KEY")
+        # Inject plugin config into context if not already present
+        if "TMDB_API_KEY" not in context.static.config:
+            api_key_value = os.getenv("TMDB_API_KEY")
+            context.inject_plugin_config("TMDB_API_KEY", api_key_value)
+
+        # Use context-injected secrets/config instead of os.getenv
+        # This allows us to mock configs during testing or change providers easily
+        api_key = context.static.config.get("TMDB_API_KEY")
         if not api_key:
-            return {"error": "TMDB_API_KEY environment variable not set."}
+            return {"error": "TMDB_API_KEY is not configured in the system context."}
 
         # TMDb API v3 endpoint: /search/movie or /search/tv
         url = f"https://api.themoviedb.org/3/search/{type}"

@@ -49,6 +49,8 @@ async def test_chat_final_response(orchestrator: AgentOrchestrator):
 @pytest.mark.asyncio
 async def test_chat_tool_call(orchestrator: AgentOrchestrator):
     """Test that chat executes tools when LLM requests them."""
+    from app.core.context import MMCPContext
+
     mock_tool = MagicMock()
     mock_tool.name = "test_tool"
     mock_tool.execute = AsyncMock(return_value={"result": "Tool executed"})
@@ -64,7 +66,11 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
         result = await orchestrator.chat("Test message")
 
         assert result == "Done"
-        mock_tool.execute.assert_called_once_with(param="value")
+        # Verify tool was called with context and params
+        args, kwargs = mock_tool.execute.call_args
+        assert len(args) == 1
+        assert isinstance(args[0], MMCPContext)  # First arg is context
+        assert kwargs == {"param": "value"}
 
 
 @pytest.mark.asyncio

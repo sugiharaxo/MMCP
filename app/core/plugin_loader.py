@@ -1,15 +1,12 @@
 import importlib
 import inspect
-import logging
 import pkgutil
 from pathlib import Path
 
 from pydantic import BaseModel
 
+from app.core.logger import logger
 from app.core.plugin_interface import MMCPTool
-
-# Using standard logging for now
-logger = logging.getLogger("mmcp.loader")
 
 
 class PluginLoader:
