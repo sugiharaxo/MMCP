@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.core.logger import logger
-from app.core.plugin_interface import MMCPTool
+from app.core.plugin_interface import MMCPContextProvider, MMCPTool
 
 
 class PluginLoader:
@@ -20,6 +20,8 @@ class PluginLoader:
         self.tools: dict[str, MMCPTool] = {}
         # Reverse mapping: input_schema class -> tool instance
         self._schema_to_tool: dict[type[BaseModel], MMCPTool] = {}
+        # Context providers: context_key -> provider instance
+        self.context_providers: dict[str, MMCPContextProvider] = {}
 
     def load_plugins(self):
         """
@@ -66,8 +68,31 @@ class PluginLoader:
                     logger.info(f"Loaded Tool: {tool_instance.name} (v{tool_instance.version})")
                     found_tool = True
 
-            if not found_tool:
-                logger.debug(f"No MMCPTool subclass found in {module_name}")
+            # Inspect the module for classes inheriting from MMCPContextProvider
+            found_context_provider = False
+            for _, obj in inspect.getmembers(module):
+                if (
+                    inspect.isclass(obj)
+                    and issubclass(obj, MMCPContextProvider)
+                    and obj is not MMCPContextProvider
+                ):
+                    provider_instance = obj()
+                    context_key = provider_instance.context_key
+
+                    # Validate that context_key is unique
+                    if context_key in self.context_providers:
+                        logger.error(
+                            f"Duplicate context_key '{context_key}' found in {module_name}. "
+                            f"Skipping provider."
+                        )
+                        continue
+
+                    self.context_providers[context_key] = provider_instance
+                    logger.info(f"Loaded Context Provider: {context_key}")
+                    found_context_provider = True
+
+            if not found_tool and not found_context_provider:
+                logger.debug(f"No MMCPTool or MMCPContextProvider subclass found in {module_name}")
 
         except Exception as e:
             # Graceful failure: Log the error but keep the server running

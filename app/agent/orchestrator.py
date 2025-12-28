@@ -1,8 +1,9 @@
 """Agent Orchestrator - manages the ReAct loop and conversation context."""
 
 import asyncio
+import json
 import uuid
-from typing import Union
+from typing import Any, Union
 
 from app.agent.schemas import FinalResponse
 from app.core.config import settings
@@ -13,8 +14,10 @@ from app.core.errors import (
     map_provider_error,
     map_tool_error,
 )
+from app.core.health import HealthMonitor
 from app.core.llm import get_agent_decision
 from app.core.logger import logger
+from app.core.plugin_interface import ContextResponse
 from app.core.plugin_loader import PluginLoader
 
 
@@ -26,15 +29,18 @@ class AgentOrchestrator:
     Uses Instructor's discriminated Union pattern: LLM returns FinalResponse or a tool input schema directly.
     """
 
-    def __init__(self, loader: PluginLoader):
+    def __init__(self, loader: PluginLoader, health: HealthMonitor | None = None):
         """
         Initialize the orchestrator.
 
         Args:
             loader: PluginLoader instance with loaded tools.
+            health: HealthMonitor instance (singleton from app state). If None, creates a new one
+                   (for backward compatibility, but not recommended for production).
         """
         self.loader = loader
         self.history: list[dict] = []
+        self.health = health or HealthMonitor()
 
     def _get_system_prompt(self, context: MMCPContext | None = None) -> str:
         """
@@ -182,6 +188,215 @@ Use tools when you need specific information or actions. When you have enough in
             current_chars = sum(len(m.get("content", "")) for m in self.history)
             logger.debug(f"Trimmed context to {current_chars} chars.")
 
+    def _prune_dict(self, data: Any, max_chars: int, current_size: int = 0) -> tuple[Any, int]:
+        """
+        Recursively prune dictionary/list to fit within character limit.
+
+        Uses "Lumberjack" approach: limits list lengths and string lengths
+        before serialization to avoid JSON parsing errors.
+
+        Args:
+            data: The data structure to prune (dict, list, or primitive).
+            max_chars: Maximum character count allowed.
+            current_size: Current character count (for tracking).
+
+        Returns:
+            Tuple of (pruned_data, estimated_size).
+        """
+        # Base case: primitive types
+        if isinstance(data, (str, int, float, bool, type(None))):
+            str_repr = str(data)
+            if len(str_repr) > 200:  # Limit individual strings to 200 chars
+                return str_repr[:200] + "...", current_size + 203
+            return data, current_size + len(str_repr)
+
+        # List: limit to 5 items
+        if isinstance(data, list):
+            pruned_list = []
+            size = current_size + 2  # Account for brackets
+            for idx, item in enumerate(data):
+                if idx >= 5:  # Limit to 5 items
+                    pruned_list.append("... (truncated)")
+                    size += 15
+                    break
+                pruned_item, size = self._prune_dict(item, max_chars, size)
+                pruned_list.append(pruned_item)
+                if size > max_chars:
+                    pruned_list.append("... (truncated)")
+                    break
+            return pruned_list, size
+
+        # Dict: recursively prune values
+        if isinstance(data, dict):
+            pruned_dict = {}
+            size = current_size + 2  # Account for braces
+            for key, value in data.items():
+                key_str = str(key)
+                size += len(key_str) + 3  # Key + quotes + colon
+                if size > max_chars:
+                    pruned_dict["... (truncated)"] = True
+                    break
+                pruned_value, size = self._prune_dict(value, max_chars, size)
+                pruned_dict[key] = pruned_value
+                if size > max_chars:
+                    break
+            return pruned_dict, size
+
+        # Fallback: convert to string
+        str_repr = str(data)
+        if len(str_repr) > 200:
+            return str_repr[:200] + "...", current_size + 203
+        return data, current_size + len(str_repr)
+
+    def _truncate_provider_data(self, data: dict[str, Any]) -> dict[str, Any]:
+        """
+        Truncate provider data to prevent context bloat.
+
+        Uses recursive dictionary pruning ("Lumberjack" approach) instead of
+        fragile JSON string slicing. This prevents JSONDecodeError on complex
+        nested structures.
+
+        Args:
+            data: The provider data dictionary.
+
+        Returns:
+            Truncated data dictionary (pruned recursively to fit within limits).
+        """
+        max_chars = settings.context_max_chars_per_provider
+
+        # Check size first
+        json_str = json.dumps(data, default=str)
+        if len(json_str) <= max_chars:
+            return data
+
+        # Prune recursively
+        pruned_data, _ = self._prune_dict(data, max_chars)
+        pruned_json = json.dumps(pruned_data, default=str)
+
+        logger.warning(
+            f"Provider data truncated from {len(json_str)} to {len(pruned_json)} chars "
+            f"(recursive pruning applied)"
+        )
+        return pruned_data
+
+    async def _safe_execute_provider(
+        self, provider, user_input: str
+    ) -> tuple[str, dict[str, Any] | None]:
+        """
+        Safely execute a context provider with timeout and error handling.
+
+        Args:
+            provider: The MMCPContextProvider instance.
+            user_input: The user's query for eligibility checking.
+
+        Returns:
+            Tuple of (provider_key, data_dict or None if failed).
+        """
+        provider_key = provider.context_key
+
+        try:
+            # Check eligibility first (lightweight)
+            if not await provider.is_eligible(user_input):
+                return provider_key, None
+
+            # Check health (circuit breaker)
+            if not self.health.is_available(provider_key):
+                logger.debug(f"Context provider '{provider_key}' is circuit-broken, skipping")
+                return provider_key, None
+
+            # Execute with per-provider timeout
+            timeout_seconds = settings.context_per_provider_timeout_ms / 1000.0
+            result = await asyncio.wait_for(provider.provide_context(), timeout=timeout_seconds)
+
+            # Handle both dict (backward compat) and ContextResponse
+            data = result.data if isinstance(result, ContextResponse) else result
+            # TTL is available in ContextResponse but not currently used (future enhancement)
+            # Could implement caching based on result.ttl if needed
+
+            # Truncate if needed
+            truncated_data = self._truncate_provider_data(data)
+
+            # Record success
+            self.health.record_success(provider_key)
+
+            return provider_key, truncated_data
+
+        except asyncio.TimeoutError:
+            logger.warning(f"Context provider '{provider_key}' timed out after {timeout_seconds}s")
+            self.health.record_failure(provider_key)
+            return provider_key, None
+
+        except Exception as e:
+            logger.error(
+                f"Context provider '{provider_key}' failed: {e}",
+                exc_info=True,
+            )
+            self.health.record_failure(provider_key)
+            return provider_key, None
+
+    async def assemble_llm_context(self, user_input: str, context: MMCPContext) -> None:
+        """
+        Assemble LLM context by running all eligible context providers in parallel.
+
+        This is the "ReAct preparation phase" - fetches dynamic state before the loop begins.
+        Implements global timeout, per-provider timeouts, and circuit breaker protection.
+
+        Args:
+            user_input: The user's query (for eligibility filtering).
+            context: The MMCPContext to update with provider data.
+        """
+        if not self.loader.context_providers:
+            logger.debug("No context providers registered")
+            return
+
+        # Filter by eligibility and health
+        active_providers = []
+        for provider in self.loader.context_providers.values():
+            # Quick eligibility check (synchronous check first, then async if needed)
+            if not self.health.is_available(provider.context_key):
+                continue
+            active_providers.append(provider)
+
+        if not active_providers:
+            logger.debug("No eligible context providers available")
+            return
+
+        logger.info(
+            f"Assembling context from {len(active_providers)} provider(s) "
+            f"(global timeout: {settings.context_global_timeout_ms}ms)"
+        )
+
+        # Run all providers in parallel with global timeout
+        tasks = [self._safe_execute_provider(p, user_input) for p in active_providers]
+
+        try:
+            global_timeout_seconds = settings.context_global_timeout_ms / 1000.0
+            results = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=global_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Context assembly timed out after {global_timeout_seconds}s "
+                f"(global timeout exceeded)"
+            )
+            return
+
+        # Update LLM media state with successful results
+        # Note: _safe_execute_provider wraps all exceptions, so results will be tuples, not Exceptions
+        for result in results:
+            # Defensive check (shouldn't happen, but safe programming)
+            if isinstance(result, Exception):
+                logger.error(f"Context provider raised exception: {result}", exc_info=True)
+                continue
+
+            provider_key, data = result
+            if data is not None:
+                context.llm.media_state[provider_key] = data
+                logger.debug(f"Updated media_state with data from '{provider_key}'")
+            else:
+                logger.debug(f"Provider '{provider_key}' returned no data (skipped or failed)")
+
     async def safe_tool_call(
         self, tool, tool_name: str, args: dict, context: MMCPContext
     ) -> tuple[str, bool]:
@@ -263,6 +478,9 @@ Use tools when you need specific information or actions. When you have enough in
 
         # Populate LLM context with available tools
         context.set_available_tools(self.loader.list_tools())
+
+        # Assemble dynamic context from providers (ReAct preparation phase)
+        await self.assemble_llm_context(user_input, context)
 
         # Initialize system prompt if this is the first message
         # Pass context to make prompt context-aware (user preferences, media state)

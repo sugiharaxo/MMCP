@@ -91,6 +91,29 @@ class Settings(BaseSettings):
         description="Directory for cache files",
     )
 
+    # Context Provider Configuration
+    # Heuristics for context provider execution and health monitoring
+    context_global_timeout_ms: int = Field(
+        default=800,
+        description="Global timeout in milliseconds for all context providers combined",
+    )
+    context_per_provider_timeout_ms: int = Field(
+        default=300,
+        description="Per-provider timeout in milliseconds for individual context fetches",
+    )
+    context_max_chars_per_provider: int = Field(
+        default=2000,
+        description="Maximum characters per provider response (truncated if exceeded)",
+    )
+    context_failure_threshold: int = Field(
+        default=3,
+        description="Number of consecutive failures before circuit breaker trips",
+    )
+    context_recovery_wait_minutes: int = Field(
+        default=5,
+        description="Minutes to wait before retrying a circuit-broken provider",
+    )
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         # Ensure directories exist

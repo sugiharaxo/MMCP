@@ -1,7 +1,7 @@
 import abc
-from typing import Any
+from typing import Any, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.context import MMCPContext
 
@@ -87,3 +87,73 @@ class MMCPTool(abc.ABC):
             A string, dict, or Pydantic model containing the result.
         """
         pass
+
+
+class ContextResponse(BaseModel):
+    """
+    Response model for context providers.
+
+    Handles TTL and metadata internally while keeping the LLM's data clean.
+    """
+
+    data: dict[str, Any] = Field(description="The context data to inject into LLM media_state")
+    ttl: int = Field(default=300, description="Time-to-live in seconds (default: 5 minutes)")
+    provider_name: str = Field(description="Name of the provider for logging and health tracking")
+
+
+class MMCPContextProvider(abc.ABC):
+    """
+    Abstract Base Class for context providers.
+
+    Context providers fetch dynamic state (e.g., Jellyfin library status, Plex server info)
+    that should be available to the LLM before the ReAct loop begins.
+
+    Philosophy:
+    - Lightweight eligibility checks (no heavy I/O)
+    - Async execution with timeouts
+    - Circuit breaker protection via health monitor
+    - Truncation to prevent context bloat
+    """
+
+    @property
+    @abc.abstractmethod
+    def context_key(self) -> str:
+        """
+        The key in the JSON object (e.g., 'jellyfin', 'plex').
+
+        This key will be used in context.llm.media_state[context_key] = data.
+        Must be unique across all context providers.
+        """
+        pass
+
+    @abc.abstractmethod
+    async def provide_context(self) -> Union[dict[str, Any], "ContextResponse"]:
+        """
+        Fetch the dynamic context data.
+
+        This method can return either:
+        - A dictionary (for backward compatibility)
+        - A ContextResponse (recommended) with TTL and metadata
+
+        The dictionary/ContextResponse.data will be injected into
+        the LLM's media_state under the context_key.
+
+        Returns:
+            Dictionary or ContextResponse of context data (will be truncated if too large).
+        """
+        pass
+
+    async def is_eligible(self, _query: str) -> bool:
+        """
+        Lightweight check if this provider should run for the given query.
+
+        Override this to implement query-based filtering (e.g., only run
+        Jellyfin provider if query mentions "jellyfin" or "library").
+
+        Args:
+            query: The user's input query.
+
+        Returns:
+            True if this provider should execute, False otherwise.
+        """
+        return True
