@@ -46,7 +46,11 @@ class PluginLoader:
         Create a safe PluginContext facade for plugins to use.
         """
         import os
+<<<<<<< HEAD
 
+=======
+        
+>>>>>>> 3c107ed (Add missing API keys in PluginContext)
         plugin_config = {
             "root_dir": str(settings.root_dir),
             "download_dir": str(settings.download_dir),
