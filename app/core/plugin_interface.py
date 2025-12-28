@@ -3,6 +3,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from app.core.context import MMCPContext
+
 
 class MMCPTool(abc.ABC):
     """
@@ -58,11 +60,14 @@ class MMCPTool(abc.ABC):
         return True
 
     @abc.abstractmethod
-    async def execute(self, **kwargs: Any) -> Any:
+    async def execute(self, context: MMCPContext, **kwargs: Any) -> Any:
         """
         The actual logic.
 
+        Philosophy: Tools never fetch context themselves — context is injected.
+
         Args:
+            context: MMCPContext with config, runtime state, and metrics
             **kwargs: valid data matching input_schema.
 
         Returns:

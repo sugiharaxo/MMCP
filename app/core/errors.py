@@ -5,13 +5,11 @@ Provides exception hierarchy, error mapping utilities, and structured error resp
 Follows "Log Deep, Report Shallow" principle.
 """
 
-import logging
 import uuid
 
 from pydantic import BaseModel
 
-logger = logging.getLogger("mmcp.errors")
-
+from app.core.logger import logger
 
 # --- Exception Hierarchy ---
 

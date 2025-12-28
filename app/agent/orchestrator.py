@@ -1,12 +1,12 @@
 """Agent Orchestrator - manages the ReAct loop and conversation context."""
 
 import asyncio
-import logging
 import uuid
 from typing import Union
 
 from app.agent.schemas import FinalResponse
 from app.core.config import settings
+from app.core.context import MMCPContext
 from app.core.errors import (
     MMCPError,
     map_agent_error,
@@ -14,9 +14,8 @@ from app.core.errors import (
     map_tool_error,
 )
 from app.core.llm import get_agent_decision
+from app.core.logger import logger
 from app.core.plugin_loader import PluginLoader
-
-logger = logging.getLogger("mmcp.agent")
 
 
 class AgentOrchestrator:
@@ -37,12 +36,15 @@ class AgentOrchestrator:
         self.loader = loader
         self.history: list[dict] = []
 
-    def _get_system_prompt(self) -> str:
+    def _get_system_prompt(self, context: MMCPContext | None = None) -> str:
         """
-        Generate system prompt with dynamic tool descriptions.
+        Generate system prompt with dynamic tool descriptions and context-aware state.
 
         Simplified prompt focusing on "when to use tools" rather than formatting rules.
         The Union response_model handles the "how" of formatting automatically.
+
+        Injects dynamic state from context (user preferences, media state) to make
+        the LLM aware of current server state.
         """
         if not self.loader:
             tool_desc = "No tools are currently available."
@@ -83,6 +85,20 @@ class AgentOrchestrator:
 
             tool_desc = "\n".join(tool_descriptions)
 
+        # Get the sanitized LLM payload for context-aware prompts
+        context_section = ""
+        if context:
+            state = context.get_llm_payload()
+            # Build human-readable state description
+            state_parts = []
+            if state.get("user_preferences"):
+                state_parts.append(f"User Preferences: {state['user_preferences']}")
+            if state.get("media_state"):
+                state_parts.append(f"Media State: {state['media_state']}")
+            if state_parts:
+                state_desc = "\n".join(state_parts)
+                context_section = f"CONTEXT:\n{state_desc}\n\n"
+
         return f"""You are MMCP (Modular Media Control Plane), an intelligent media assistant.
 You help users manage their media library, search for metadata, and handle downloads.
 
@@ -91,7 +107,7 @@ IDENTITY:
 - Use tools to fetch data before making recommendations.
 - If a tool fails, explain why to the user and try a different approach.
 
-AVAILABLE TOOLS:
+{context_section}AVAILABLE TOOLS:
 {tool_desc}
 
 Use tools when you need specific information or actions. When you have enough information to answer the user, provide a FinalResponse with your answer."""
@@ -120,19 +136,28 @@ Use tools when you need specific information or actions. When you have enough in
 
         return ResponseModel
 
-    def _emit_status(self, message: str, trace_id: str | None = None):
+    def _emit_status(
+        self,
+        message: str,
+        trace_id: str | None = None,
+        status_type: str = "info",  # noqa: UP007
+    ):
         """
         Emit status messages for visibility and future extensibility.
 
-        Currently prints to console and logs. In the future, this could broadcast
-        to WebSocket clients or other UI components.
+        Logs structured messages for observability. UI components should subscribe
+        to log streams rather than scraping console output.
 
         Args:
             message: The status message to emit
             trace_id: Optional trace ID for log correlation
+            status_type: Type of status update ('tool_start', 'tool_end', 'thought', 'info')
+                        Used by frontend to filter and display appropriate updates
         """
-        print(message)
-        logger.info(message, extra={"trace_id": trace_id} if trace_id else {})
+        extra = {"is_status_update": True, "status_type": status_type}
+        if trace_id:
+            extra["trace_id"] = trace_id
+        logger.info(message, extra=extra)
 
     def _trim_history(self):
         """
@@ -158,7 +183,7 @@ Use tools when you need specific information or actions. When you have enough in
             logger.debug(f"Trimmed context to {current_chars} chars.")
 
     async def safe_tool_call(
-        self, tool, tool_name: str, args: dict, trace_id: str, failure_counts: dict[str, int]
+        self, tool, tool_name: str, args: dict, context: MMCPContext
     ) -> tuple[str, bool]:
         """
         Safely execute a tool.
@@ -173,26 +198,26 @@ Use tools when you need specific information or actions. When you have enough in
             tool: The tool instance to execute
             tool_name: Name of the tool (for error messages)
             args: Arguments dict (already validated by Pydantic)
-            trace_id: Trace ID for log correlation
+            context: MMCPContext for this execution
 
         Returns:
             Tool result as string, or error message if execution failed
         """
         try:
-            # Execute tool with validated arguments
-            result = await asyncio.wait_for(tool.execute(**args), timeout=30.0)
+            # Execute tool with injected context and validated arguments
+            result = await asyncio.wait_for(tool.execute(context, **args), timeout=30.0)
             return str(result) if result is not None else "Tool executed successfully.", False
 
         except Exception as e:
             # Map to ToolError for logging, but return simple string for LLM
-            tool_error = map_tool_error(e, tool_name=tool_name, trace_id=trace_id)
+            tool_error = map_tool_error(e, tool_name=tool_name, trace_id=context.runtime.trace_id)
             logger.error(
-                f"Tool {tool_name} failed (trace_id={trace_id}): {e}",
+                f"Tool {tool_name} failed (trace_id={context.runtime.trace_id}): {e}",
                 exc_info=True,
-                extra={"trace_id": trace_id, "tool_name": tool_name},
+                extra={"trace_id": context.runtime.trace_id, "tool_name": tool_name},
             )
             # Track tool failures to detect repeated issues
-            failure_counts[tool_name] = failure_counts.get(tool_name, 0) + 1
+            context.increment_tool_failures(tool_name)
 
             # Return sanitized error message that LLM can understand and act on
             # Handle specific error types for better user experience
@@ -233,9 +258,16 @@ Use tools when you need specific information or actions. When you have enough in
         if trace_id is None:
             trace_id = str(uuid.uuid4())
 
+        # Create MMCP context for this conversation
+        context = MMCPContext(trace_id=trace_id)
+
+        # Populate LLM context with available tools
+        context.set_available_tools(self.loader.list_tools())
+
         # Initialize system prompt if this is the first message
+        # Pass context to make prompt context-aware (user preferences, media state)
         if not self.history:
-            self.history.append({"role": "system", "content": self._get_system_prompt()})
+            self.history.append({"role": "system", "content": self._get_system_prompt(context)})
 
         # Add user message to history
         self.history.append({"role": "user", "content": user_input})
@@ -249,13 +281,14 @@ Use tools when you need specific information or actions. When you have enough in
         max_llm_retries = 2  # Allow LLM to self-correct on validation errors
         rate_limit_retry_count = 0
         max_rate_limit_retries = 3  # Allow up to 3 retries for rate limits
-        tool_failure_counts: dict[str, int] = {}  # Track repeated tool failures
 
         for step in range(max_steps):
+            context.increment_step()
             self._trim_history()
 
             # 1. Ask the LLM what to do
             try:
+                context.increment_llm_call()
                 response = await get_agent_decision(self.history, response_model=ResponseModel)
                 llm_retry_count = 0  # Reset retry count on success
             except Exception as e:
@@ -320,8 +353,11 @@ Use tools when you need specific information or actions. When you have enough in
             if isinstance(response, FinalResponse):
                 # Agent wants to respond to user - we're done
                 self._emit_status(
-                    f"\n[Step {step + 1}] Final Response: {response.answer}", trace_id
+                    f"\n[Step {step + 1}] Final Response: {response.answer}",
+                    trace_id,
+                    status_type="thought",
                 )
+                context.log_inspection()
                 self.history.append({"role": "assistant", "content": response.answer})
                 return response.answer
 
@@ -353,20 +389,24 @@ Use tools when you need specific information or actions. When you have enough in
             self._emit_status(
                 f"[Step {step + 1}] Action: Call tool '{tool_name}' with args {tool_args}",
                 trace_id,
+                status_type="tool_start",
             )
+            context.increment_tool_execution()
             logger.info(
                 f"Executing tool: {tool_name} with {tool_args}",
                 extra={"trace_id": trace_id, "tool_name": tool_name},
             )
 
-            result, is_error = await self.safe_tool_call(
-                tool, tool_name, tool_args, trace_id, tool_failure_counts
+            result, is_error = await self.safe_tool_call(tool, tool_name, tool_args, context)
+            self._emit_status(
+                f"[Step {step + 1}] Observation: {result}",
+                trace_id,
+                status_type="tool_end",
             )
-            self._emit_status(f"[Step {step + 1}] Observation: {result}", trace_id)
 
             # Check for repeated tool failures - if same tool fails 3+ times, force final response
-            failure_count = tool_failure_counts.get(tool_name, 0)
-            if is_error and failure_count >= 3:
+            if is_error and context.is_tool_circuit_breaker_tripped(tool_name, threshold=3):
+                failure_count = context.get_tool_failure_count(tool_name)
                 msg = f"I encountered a persistent issue with the {tool_name} tool. {result}"
                 logger.error(
                     f"Circuit breaker triggered for {tool_name} after {failure_count} failures "
@@ -378,6 +418,7 @@ Use tools when you need specific information or actions. When you have enough in
                     },
                 )
                 # Immediate return - bypasses the rest of the loop and prevents LLM from trying again
+                context.log_inspection()
                 return msg
 
             # Feed tool result back into history for next iteration
@@ -395,7 +436,10 @@ Use tools when you need specific information or actions. When you have enough in
             f"ReAct loop exhausted {max_steps} steps without final response (trace_id={trace_id})",
             extra={"trace_id": trace_id, "max_steps": max_steps},
         )
+        context.log_inspection()
         self._emit_status(
-            f"[System] ReAct loop exhausted {max_steps} steps without resolution", trace_id
+            f"[System] ReAct loop exhausted {max_steps} steps without resolution",
+            trace_id,
+            status_type="info",
         )
         return "I attempted to solve this but reached my reasoning limit. Please try being more specific or breaking down your request."
