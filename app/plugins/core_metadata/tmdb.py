@@ -29,6 +29,10 @@ class TMDbLookupTool(MMCPTool):
         return "tmdb_lookup_metadata"
 
     @property
+    def status_description(self) -> str:
+        return "Movie/TV metadata lookup via TMDb API"
+
+    @property
     def description(self) -> str:
         return "Finds movie/TV show metadata (ID, year, overview, poster) using The Movie Database (TMDb) API."
 
@@ -46,6 +50,22 @@ class TMDbLookupTool(MMCPTool):
         import os
 
         return bool(os.getenv("TMDB_API_KEY"))
+
+    def get_status_info(self) -> dict[str, Any]:
+        """
+        Return TMDb plugin status information.
+
+        Plugin manages its own status - no core knowledge needed.
+        """
+        import os
+
+        api_key = os.getenv("TMDB_API_KEY")
+
+        return {
+            "service_name": "TMDb API",
+            "configured": bool(api_key),
+            "description": self.status_description,
+        }
 
     def _extract_year(self, date_str: str | None) -> int | None:
         """Extract year from TMDb date string (YYYY-MM-DD format)."""
