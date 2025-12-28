@@ -2,7 +2,7 @@
 
 import asyncio
 import uuid
-from typing import Union
+from typing import Any
 
 from app.agent.schemas import FinalResponse
 from app.core.config import settings
@@ -13,9 +13,12 @@ from app.core.errors import (
     map_provider_error,
     map_tool_error,
 )
+from app.core.health import HealthMonitor
 from app.core.llm import get_agent_decision
 from app.core.logger import logger
+from app.core.plugin_interface import ContextResponse
 from app.core.plugin_loader import PluginLoader
+from app.core.utils.pruner import ContextPruner
 
 
 class AgentOrchestrator:
@@ -26,15 +29,18 @@ class AgentOrchestrator:
     Uses Instructor's discriminated Union pattern: LLM returns FinalResponse or a tool input schema directly.
     """
 
-    def __init__(self, loader: PluginLoader):
+    def __init__(self, loader: PluginLoader, health: HealthMonitor | None = None):
         """
         Initialize the orchestrator.
 
         Args:
             loader: PluginLoader instance with loaded tools.
+            health: HealthMonitor instance (singleton from app state). If None, creates a new one
+                   (for backward compatibility, but not recommended for production).
         """
         self.loader = loader
         self.history: list[dict] = []
+        self.health = health or HealthMonitor()
 
     def _get_system_prompt(self, context: MMCPContext | None = None) -> str:
         """
@@ -129,10 +135,10 @@ Use tools when you need specific information or actions. When you have enough in
 
         # Build Union: FinalResponse | Tool1 | Tool2 | ...
         # Start with FinalResponse, then add all tool schemas
-        # Note: Using Union for dynamic runtime construction (linter warning is false positive)
+        # Note: Using Union for dynamic runtime construction
         ResponseModel: type = FinalResponse
         for schema in tool_schemas:
-            ResponseModel = Union[ResponseModel, schema]  # type: ignore[assignment]
+            ResponseModel = ResponseModel | schema  # type: ignore[assignment]
 
         return ResponseModel
 
@@ -181,6 +187,124 @@ Use tools when you need specific information or actions. When you have enough in
             # Recalculate after pop for accurate logging
             current_chars = sum(len(m.get("content", "")) for m in self.history)
             logger.debug(f"Trimmed context to {current_chars} chars.")
+
+    async def _safe_execute_provider(
+        self, provider, user_input: str
+    ) -> tuple[str, dict[str, Any] | None]:
+        """
+        Safely execute a context provider with timeout and error handling.
+
+        Args:
+            provider: The MMCPContextProvider instance.
+            user_input: The user's query for eligibility checking.
+
+        Returns:
+            Tuple of (provider_key, data_dict or None if failed).
+        """
+        provider_key = provider.context_key
+
+        try:
+            # Check eligibility first (lightweight)
+            if not await provider.is_eligible(user_input):
+                return provider_key, None
+
+            # Check health (circuit breaker)
+            if not self.health.is_available(provider_key):
+                logger.debug(f"Context provider '{provider_key}' is circuit-broken, skipping")
+                return provider_key, None
+
+            # Execute with per-provider timeout
+            timeout_seconds = settings.context_per_provider_timeout_ms / 1000.0
+            result = await asyncio.wait_for(provider.provide_context(), timeout=timeout_seconds)
+
+            # Handle both dict (backward compat) and ContextResponse
+            data = result.data if isinstance(result, ContextResponse) else result
+            # TTL is available in ContextResponse but not currently used (future enhancement)
+            # Could implement caching based on result.ttl if needed
+
+            # Truncate if needed (Safety Fuse approach)
+            truncated_data = ContextPruner.truncate_provider_data(data, provider_key, settings)
+
+            # Record success
+            self.health.record_success(provider_key)
+
+            return provider_key, truncated_data
+
+        except asyncio.TimeoutError:
+            logger.warning(f"Context provider '{provider_key}' timed out after {timeout_seconds}s")
+            self.health.record_failure(provider_key)
+            return provider_key, None
+
+        except Exception as e:
+            logger.error(
+                f"Context provider '{provider_key}' failed: {e}",
+                exc_info=True,
+            )
+            self.health.record_failure(provider_key)
+            return provider_key, None
+
+    async def assemble_llm_context(self, user_input: str, context: MMCPContext) -> None:
+        """
+        Assemble LLM context by running all eligible context providers in parallel.
+
+        This is the "ReAct preparation phase" - fetches dynamic state before the loop begins.
+        Implements global timeout, per-provider timeouts, and circuit breaker protection.
+
+        Args:
+            user_input: The user's query (for eligibility filtering).
+            context: The MMCPContext to update with provider data.
+        """
+        if not self.loader.context_providers:
+            logger.debug("No context providers registered")
+            return
+
+        # Filter by eligibility and health
+        active_providers = []
+        for provider in self.loader.context_providers.values():
+            # Quick eligibility check (synchronous check first, then async if needed)
+            if not self.health.is_available(provider.context_key):
+                continue
+            active_providers.append(provider)
+
+        if not active_providers:
+            logger.debug("No eligible context providers available")
+            return
+
+        logger.info(
+            f"Assembling context from {len(active_providers)} provider(s) "
+            f"(global timeout: {settings.context_global_timeout_ms}ms)"
+        )
+
+        # Run all providers in parallel with global timeout
+        tasks = [self._safe_execute_provider(p, user_input) for p in active_providers]
+
+        try:
+            global_timeout_seconds = settings.context_global_timeout_ms / 1000.0
+            results = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=global_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Context assembly timed out after {global_timeout_seconds}s "
+                f"(global timeout exceeded)"
+            )
+            return
+
+        # Update LLM media state with successful results
+        # Note: _safe_execute_provider wraps all exceptions, so results will be tuples, not Exceptions
+        for result in results:
+            # Defensive check (shouldn't happen, but safe programming)
+            if isinstance(result, Exception):
+                logger.error(f"Context provider raised exception: {result}", exc_info=True)
+                continue
+
+            provider_key, data = result
+            if data is not None:
+                context.llm.media_state[provider_key] = data
+                logger.debug(f"Updated media_state with data from '{provider_key}'")
+            else:
+                logger.debug(f"Provider '{provider_key}' returned no data (skipped or failed)")
 
     async def safe_tool_call(
         self, tool, tool_name: str, args: dict, context: MMCPContext
@@ -264,12 +388,18 @@ Use tools when you need specific information or actions. When you have enough in
         # Populate LLM context with available tools
         context.set_available_tools(self.loader.list_tools())
 
-        # Initialize system prompt if this is the first message
-        # Pass context to make prompt context-aware (user preferences, media state)
-        if not self.history:
-            self.history.append({"role": "system", "content": self._get_system_prompt(context)})
+        # Assemble dynamic context from providers (ReAct preparation phase)
+        # This runs on EVERY user message to ensure fresh context is available
+        await self.assemble_llm_context(user_input, context)
 
-        # Add user message to history
+        # 2. Reconstruct history: PIN system at top, keep ALL other history
+        # We only filter out 'system' to prevent duplicates.
+        # We MUST keep 'user', 'assistant', and 'tool' roles.
+        system_message = {"role": "system", "content": self._get_system_prompt(context)}
+        messages = [m for m in self.history if m["role"] != "system"]
+        self.history = [system_message] + messages
+
+        # 3. Add the user's current message
         self.history.append({"role": "user", "content": user_input})
 
         # Build the Union response model: FinalResponse | ToolSchema1 | ToolSchema2 | ...

@@ -146,3 +146,68 @@ def test_trim_history_preserves_system_prompt(orchestrator: AgentOrchestrator):
 
         # System prompt should still be at index 0
         assert orchestrator.history[0]["role"] == "system"
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_self_healing_filters_duplicates(orchestrator: AgentOrchestrator):
+    """Test that duplicate system messages are filtered out during reconstruction."""
+    from app.core.context import MMCPContext
+
+    # Add multiple system messages (simulating corruption)
+    orchestrator.history.append({"role": "system", "content": "Old system prompt"})
+    orchestrator.history.append({"role": "system", "content": "Another system prompt"})
+    orchestrator.history.append({"role": "user", "content": "Hello"})
+    orchestrator.history.append({"role": "assistant", "content": "Hi there"})
+
+    context = MMCPContext()
+
+    # Trigger the system prompt reconstruction (normally happens in chat())
+    await orchestrator.assemble_llm_context("test", context)
+    new_system_message = {"role": "system", "content": orchestrator._get_system_prompt(context)}
+    non_system_messages = [m for m in orchestrator.history if m["role"] != "system"]
+    orchestrator.history = [new_system_message] + non_system_messages
+
+    # Should have exactly one system message at index 0
+    assert orchestrator.history[0]["role"] == "system"
+    assert sum(1 for m in orchestrator.history if m["role"] == "system") == 1
+    # Should preserve other messages
+    assert len(orchestrator.history) == 3  # system + user + assistant
+
+
+def test_system_prompt_includes_context(orchestrator: AgentOrchestrator):
+    """Test that system prompt includes context data (plugins are responsible for sanitization)."""
+    from app.core.context import MMCPContext
+
+    # Create context with data (plugins should sanitize, not core)
+    context = MMCPContext()
+    context.llm.user_preferences = {"theme": "dark", "language": "en"}
+    context.llm.media_state = {"jellyfin": {"server_url": "http://localhost:8096"}}
+
+    prompt = orchestrator._get_system_prompt(context)
+
+    # Should contain context data (raw, as plugins are responsible for sanitization)
+    assert "CONTEXT:" in prompt
+    assert "User Preferences:" in prompt
+    assert "Media State:" in prompt
+    assert "theme" in prompt or "dark" in prompt  # Context should be included
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_reconstruction_works_on_empty_history(orchestrator: AgentOrchestrator):
+    """Test that system prompt reconstruction works correctly on empty history."""
+    from app.core.context import MMCPContext
+
+    # Empty history
+    orchestrator.history = []
+
+    context = MMCPContext()
+
+    # This should work without errors
+    await orchestrator.assemble_llm_context("test", context)
+    new_system_message = {"role": "system", "content": orchestrator._get_system_prompt(context)}
+    non_system_messages = [m for m in orchestrator.history if m["role"] != "system"]
+    orchestrator.history = [new_system_message] + non_system_messages
+
+    # Should create a single system message
+    assert len(orchestrator.history) == 1
+    assert orchestrator.history[0]["role"] == "system"

@@ -31,8 +31,14 @@ STATIC_DIR.mkdir(exist_ok=True)
 # 3. Initialize Plugin Loader
 loader = PluginLoader(settings.plugin_dir)
 
-# 4. Initialize Agent Orchestrator
-orchestrator = AgentOrchestrator(loader)
+# 4. Initialize Health Monitor (singleton at app state level)
+# This ensures circuit breaker state persists across requests
+from app.core.health import HealthMonitor
+
+health_monitor = HealthMonitor()
+
+# 5. Initialize Agent Orchestrator (inject health monitor)
+orchestrator = AgentOrchestrator(loader, health_monitor)
 
 
 @asynccontextmanager
