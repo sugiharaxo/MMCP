@@ -1,9 +1,8 @@
 """Agent Orchestrator - manages the ReAct loop and conversation context."""
 
 import asyncio
-import json
 import uuid
-from typing import Any, Union
+from typing import Any
 
 from app.agent.schemas import FinalResponse
 from app.core.config import settings
@@ -19,6 +18,7 @@ from app.core.llm import get_agent_decision
 from app.core.logger import logger
 from app.core.plugin_interface import ContextResponse
 from app.core.plugin_loader import PluginLoader
+from app.core.utils.pruner import ContextPruner
 
 
 class AgentOrchestrator:
@@ -135,10 +135,10 @@ Use tools when you need specific information or actions. When you have enough in
 
         # Build Union: FinalResponse | Tool1 | Tool2 | ...
         # Start with FinalResponse, then add all tool schemas
-        # Note: Using Union for dynamic runtime construction (linter warning is false positive)
+        # Note: Using Union for dynamic runtime construction
         ResponseModel: type = FinalResponse
         for schema in tool_schemas:
-            ResponseModel = Union[ResponseModel, schema]  # type: ignore[assignment]
+            ResponseModel = ResponseModel | schema  # type: ignore[assignment]
 
         return ResponseModel
 
@@ -188,99 +188,6 @@ Use tools when you need specific information or actions. When you have enough in
             current_chars = sum(len(m.get("content", "")) for m in self.history)
             logger.debug(f"Trimmed context to {current_chars} chars.")
 
-    def _prune_dict(self, data: Any, max_chars: int, current_size: int = 0) -> tuple[Any, int]:
-        """
-        Recursively prune dictionary/list to fit within character limit.
-
-        Uses "Lumberjack" approach: limits list lengths and string lengths
-        before serialization to avoid JSON parsing errors.
-
-        Args:
-            data: The data structure to prune (dict, list, or primitive).
-            max_chars: Maximum character count allowed.
-            current_size: Current character count (for tracking).
-
-        Returns:
-            Tuple of (pruned_data, estimated_size).
-        """
-        # Base case: primitive types
-        if isinstance(data, (str, int, float, bool, type(None))):
-            str_repr = str(data)
-            max_string_len = settings.context_max_string_length
-            if len(str_repr) > max_string_len:
-                return str_repr[:max_string_len] + "...", current_size + max_string_len + 3
-            return data, current_size + len(str_repr)
-
-        # List: limit to configured number of items
-        if isinstance(data, list):
-            pruned_list = []
-            size = current_size + 2  # Account for brackets
-            max_list_items = settings.context_max_list_items
-            for idx, item in enumerate(data):
-                if idx >= max_list_items:
-                    pruned_list.append("... (truncated)")
-                    size += 15
-                    break
-                pruned_item, size = self._prune_dict(item, max_chars, size)
-                pruned_list.append(pruned_item)
-                if size > max_chars:
-                    pruned_list.append("... (truncated)")
-                    break
-            return pruned_list, size
-
-        # Dict: recursively prune values
-        if isinstance(data, dict):
-            pruned_dict = {}
-            size = current_size + 2  # Account for braces
-            for key, value in data.items():
-                key_str = str(key)
-                size += len(key_str) + 3  # Key + quotes + colon
-                if size > max_chars:
-                    pruned_dict["... (truncated)"] = True
-                    break
-                pruned_value, size = self._prune_dict(value, max_chars, size)
-                pruned_dict[key] = pruned_value
-                if size > max_chars:
-                    break
-            return pruned_dict, size
-
-        # Fallback: convert to string
-        str_repr = str(data)
-        if len(str_repr) > 200:
-            return str_repr[:200] + "...", current_size + 203
-        return data, current_size + len(str_repr)
-
-    def _truncate_provider_data(self, data: dict[str, Any]) -> dict[str, Any]:
-        """
-        Truncate provider data to prevent context bloat.
-
-        Uses recursive dictionary pruning ("Lumberjack" approach) instead of
-        fragile JSON string slicing. This prevents JSONDecodeError on complex
-        nested structures.
-
-        Args:
-            data: The provider data dictionary.
-
-        Returns:
-            Truncated data dictionary (pruned recursively to fit within limits).
-        """
-        max_chars = settings.context_max_chars_per_provider
-
-        # Check size first
-        json_str = json.dumps(data, default=str)
-        if len(json_str) <= max_chars:
-            return data
-
-        # Prune recursively
-        pruned_data, _ = self._prune_dict(data, max_chars)
-        pruned_json = json.dumps(pruned_data, default=str)
-
-        logger.warning(
-            f"Provider data truncated from {len(json_str)} to {len(pruned_json)} chars "
-            f"(recursive pruning applied)"
-        )
-        return pruned_data
-
     async def _safe_execute_provider(
         self, provider, user_input: str
     ) -> tuple[str, dict[str, Any] | None]:
@@ -315,8 +222,8 @@ Use tools when you need specific information or actions. When you have enough in
             # TTL is available in ContextResponse but not currently used (future enhancement)
             # Could implement caching based on result.ttl if needed
 
-            # Truncate if needed
-            truncated_data = self._truncate_provider_data(data)
+            # Truncate if needed (Safety Fuse approach)
+            truncated_data = ContextPruner.truncate_provider_data(data, provider_key)
 
             # Record success
             self.health.record_success(provider_key)

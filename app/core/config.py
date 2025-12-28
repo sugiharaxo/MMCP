@@ -102,15 +102,15 @@ class Settings(BaseSettings):
         description="Per-provider timeout in milliseconds for individual context fetches",
     )
     context_max_chars_per_provider: int = Field(
-        default=2000,
+        default=10000,
         description="Maximum characters per provider response (truncated if exceeded)",
     )
     context_max_string_length: int = Field(
-        default=200,
+        default=500,
         description="Maximum length for individual strings in provider data during truncation",
     )
     context_max_list_items: int = Field(
-        default=5,
+        default=10,
         description="Maximum number of items in lists during truncation",
     )
     context_failure_threshold: int = Field(
