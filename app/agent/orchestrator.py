@@ -330,8 +330,11 @@ Use tools when you need specific information or actions. When you have enough in
             Tool result as string, or error message if execution failed
         """
         try:
-            # Execute tool with injected context and validated arguments
-            result = await asyncio.wait_for(tool.execute(context, **args), timeout=30.0)
+            # Create PluginContext for tool execution (tools expect PluginContext, not MMCPContext)
+            plugin_context = self.loader.create_plugin_context()
+
+            # Execute tool with PluginContext and validated arguments
+            result = await asyncio.wait_for(tool.execute(plugin_context, **args), timeout=30.0)
             return str(result) if result is not None else "Tool executed successfully.", False
 
         except Exception as e:

@@ -49,12 +49,15 @@ async def test_chat_final_response(orchestrator: AgentOrchestrator):
 @pytest.mark.asyncio
 async def test_chat_tool_call(orchestrator: AgentOrchestrator):
     """Test that chat executes tools when LLM requests them."""
-    from app.core.context import MMCPContext
+    from mmcp import PluginContext
 
     mock_tool = MagicMock()
     mock_tool.name = "test_tool"
     mock_tool.execute = AsyncMock(return_value={"result": "Tool executed"})
     orchestrator.loader.get_tool_by_schema.return_value = mock_tool
+    # Mock create_plugin_context to return a real PluginContext
+    mock_plugin_context = PluginContext(config={}, server_info={})
+    orchestrator.loader.create_plugin_context.return_value = mock_plugin_context
 
     # First call: tool input schema, Second call: final response
     tool_input = TestToolInput(param="value")
@@ -69,7 +72,8 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
         # Verify tool was called with context and params
         args, kwargs = mock_tool.execute.call_args
         assert len(args) == 1
-        assert isinstance(args[0], MMCPContext)  # First arg is context
+        assert isinstance(args[0], PluginContext)  # First arg is PluginContext (fixed type)
+        assert args[0] is mock_plugin_context  # Verify it's our mocked context
         assert kwargs == {"param": "value"}
 
 
