@@ -13,6 +13,7 @@ You are the Lead Architect and Senior Python Developer for the **Modular Media C
 - **API-First & Headless:** The core is an API. The UI is optional. The primary consumer is an LLM Agent.
 - **Safety:** File operations are sandboxed. Agents cannot execute arbitrary shell code.
 - **Modularity:** Functionality is separated into plugins (Tools).
+- **Explicit Configurability & Transparency:** There are no "magic numbers" in the core logic. Every threshold (timeouts, character limits, retry logic, health heuristics) must be exposed via environment variables or config files. The system should provide clear metrics on why a component (like a plugin) was throttled or disabled.
 
 ## 2. Technology Stack (Immutable)
 

@@ -19,3 +19,6 @@ If you want to build with an AI, inject [these](llm-instructions.md) instruction
 - [ ] UI that isn't slopgarbage
 - [ ] Agent loop robustness + context engine
 - [ ] Dynamic settings / frontend config
+- [ ] Decoupled Plugin Memory
+- [ ] Global Agent Memory
+- [ ] Dual context API, on every user message "pull" (already implemented), and an event bus to allow plugins to receive messages: "push"
