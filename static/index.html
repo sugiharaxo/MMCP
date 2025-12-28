@@ -139,12 +139,18 @@
             const indicator = document.createElement("div");
             indicator.className =
               "flex items-center justify-between plugin-status";
-            indicator.innerHTML = `
-              <span class="text-sm">${status.service_name}</span>
-              <span class="w-2 h-2 rounded-full ${
-                status.configured ? "bg-green-500" : "bg-red-500"
-              }"></span>
-            `;
+
+            const serviceNameSpan = document.createElement("span");
+            serviceNameSpan.className = "text-sm";
+            serviceNameSpan.textContent = status.service_name;
+
+            const statusSpan = document.createElement("span");
+            statusSpan.className = `w-2 h-2 rounded-full ${
+              status.configured ? "bg-green-500" : "bg-red-500"
+            }`;
+
+            indicator.appendChild(serviceNameSpan);
+            indicator.appendChild(statusSpan);
             statusContainer.appendChild(indicator);
           }
 
