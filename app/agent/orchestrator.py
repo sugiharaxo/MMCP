@@ -480,14 +480,17 @@ Use tools when you need specific information or actions. When you have enough in
         context.set_available_tools(self.loader.list_tools())
 
         # Assemble dynamic context from providers (ReAct preparation phase)
+        # This runs on EVERY user message to ensure fresh context is available
         await self.assemble_llm_context(user_input, context)
 
-        # Initialize system prompt if this is the first message
-        # Pass context to make prompt context-aware (user preferences, media state)
-        if not self.history:
-            self.history.append({"role": "system", "content": self._get_system_prompt(context)})
+        # 2. Reconstruct history: PIN system at top, keep ALL other history
+        # We only filter out 'system' to prevent duplicates.
+        # We MUST keep 'user', 'assistant', and 'tool' roles.
+        system_message = {"role": "system", "content": self._get_system_prompt(context)}
+        messages = [m for m in self.history if m["role"] != "system"]
+        self.history = [system_message] + messages
 
-        # Add user message to history
+        # 3. Add the user's current message
         self.history.append({"role": "user", "content": user_input})
 
         # Build the Union response model: FinalResponse | ToolSchema1 | ToolSchema2 | ...
