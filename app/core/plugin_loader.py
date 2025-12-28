@@ -104,6 +104,5 @@ class PluginLoader:
         """
         statuses = {}
         for name, tool in self.tools.items():
-            if hasattr(tool, "get_status_info"):
-                statuses[name] = tool.get_status_info()
+            statuses[name] = tool.get_status_info()
         return statuses
