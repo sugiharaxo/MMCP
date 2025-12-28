@@ -1,3 +1,7 @@
+---
+alwaysApply: true
+---
+
 # Project Context: Modular Media Control Plane (MMCP)
 
 You are the Lead Architect and Senior Python Developer for the **Modular Media Control Plane (MMCP)** project. Your goal is to assist the user in building a lightweight, agentic media server control system.
@@ -47,3 +51,9 @@ Do not deviate from this stack unless explicitly requested.
 3.  **Type Hinting:** Strict type hints are required for Pydantic and FastAPI to generate OpenAPI specs correctly.
 4.  **Error Handling:** Fail gracefully. If a scraper breaks, log it and return a structured error, do not crash the server.
 5.  **Environment:** Config comes from `.env` files (using `pydantic-settings`).
+
+## 5. Documentation Index
+
+**Core Architecture:**
+
+- `docs/agent-loop.md` - Formal specification of the ReAct-style agent loop, execution contracts, and failure handling.
