@@ -31,6 +31,11 @@ def _get_cache_dir() -> Path:
     return _get_project_root() / "cache"
 
 
+def _get_data_dir() -> Path:
+    """Get the default data directory for database and persistent storage."""
+    return _get_project_root() / "data"
+
+
 class Settings(BaseSettings):
     """
     Application-wide configuration.
@@ -90,6 +95,16 @@ class Settings(BaseSettings):
         default_factory=_get_cache_dir,
         description="Directory for cache files",
     )
+    data_dir: Path = Field(
+        default_factory=_get_data_dir,
+        description="Directory for database and persistent storage",
+    )
+
+    # Authentication Configuration
+    require_auth: bool = Field(
+        default=False,
+        description="Require authentication for settings endpoints (uses .admin_token file)",
+    )
 
     # Context Provider Configuration
     # Heuristics for context provider execution and health monitoring
@@ -125,13 +140,14 @@ class Settings(BaseSettings):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         # Ensure directories exist
-        for d in [self.download_dir, self.cache_dir]:
+        for d in [self.download_dir, self.cache_dir, self.data_dir]:
             d.mkdir(parents=True, exist_ok=True)
         # Normalize paths (resolve symlinks, make absolute)
         self.root_dir = self.root_dir.resolve()
         self.plugin_dir = self.plugin_dir.resolve()
         self.download_dir = self.download_dir.resolve()
         self.cache_dir = self.cache_dir.resolve()
+        self.data_dir = self.data_dir.resolve()
 
 
 class CoreSettings(BaseModel):

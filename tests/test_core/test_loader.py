@@ -14,13 +14,15 @@ def test_loader_initialization(plugin_dir: Path):
     assert loader.tools == {}
 
 
-def test_load_plugins_empty_directory(loader: PluginLoader):
+@pytest.mark.asyncio
+async def test_load_plugins_empty_directory(loader: PluginLoader):
     """Test loading plugins from an empty directory."""
-    loader.load_plugins()
+    await loader.load_plugins()
     assert loader.tools == {}
 
 
-def test_load_plugins_with_valid_plugin(plugin_dir: Path):
+@pytest.mark.asyncio
+async def test_load_plugins_with_valid_plugin(plugin_dir: Path):
     """Test loading a valid plugin."""
     from unittest.mock import MagicMock, patch
 
@@ -66,7 +68,7 @@ def test_load_plugins_with_valid_plugin(plugin_dir: Path):
         patch("app.core.plugin_loader.pkgutil.iter_modules") as mock_iter,
     ):
         mock_iter.return_value = [MagicMock(name="test_plugin", ispkg=True)]
-        loader.load_plugins()
+        await loader.load_plugins()
 
     # Check that tool was loaded
     assert "test_tool" in loader.list_tools()
@@ -96,8 +98,9 @@ def test_get_tool(loader: PluginLoader, mock_tool):
     assert loader.get_tool("nonexistent") is None
 
 
-def test_get_tool_unavailable(plugin_dir: Path):
-    """Test that unavailable tools are not loaded."""
+@pytest.mark.asyncio
+async def test_get_tool_unavailable(plugin_dir: Path):
+    """Test that unavailable tools go to standby_tools instead of being dropped."""
     from unittest.mock import MagicMock, patch
 
     from pydantic import BaseModel
@@ -142,10 +145,14 @@ def test_get_tool_unavailable(plugin_dir: Path):
         patch("app.core.plugin_loader.pkgutil.iter_modules") as mock_iter,
     ):
         mock_iter.return_value = [MagicMock(name="unavailable_plugin", ispkg=True)]
-        loader.load_plugins()
+        await loader.load_plugins()
 
-    # Tool should not be loaded because it's unavailable
+    # Tool should be in standby_tools, not active tools
     assert "unavailable_tool" not in loader.list_tools()
+    assert "unavailable_tool" in loader.standby_tools
+    tool = loader.get_tool("unavailable_tool")  # Should still be retrievable
+    assert tool is not None
+    assert tool.name == "unavailable_tool"
 
 
 @pytest.mark.asyncio

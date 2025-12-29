@@ -9,7 +9,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.agent.orchestrator import AgentOrchestrator
+from app.api.routes import settings as settings_routes
+from app.core.auth import ensure_admin_token
 from app.core.config import settings
+from app.core.database import close_database, init_database
 from app.core.errors import (
     AgentLogicError,
     AgentResponse,
@@ -44,10 +47,23 @@ orchestrator = AgentOrchestrator(loader, health_monitor)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Lifespan event handler for startup and shutdown."""
-    # Startup: Load plugins when the server starts
-    loader.load_plugins()
+    # Startup: Initialize database
+    await init_database()
+
+    # Generate admin token if auth is required
+    if settings.require_auth:
+        ensure_admin_token()
+
+    # Load plugins (now async)
+    await loader.load_plugins()
+
+    # Attach loader to app state for dependency injection
+    _app.state.loader = loader
+
     yield
-    # Shutdown: Cleanup (if needed in the future)
+
+    # Shutdown: Close database connection
+    await close_database()
 
 
 # 1. Initialize FastAPI with lifespan
@@ -160,6 +176,8 @@ async def general_exception_handler(_request: Request, exc: Exception) -> JSONRe
 
 
 # --- API Endpoints ---
+
+app.include_router(settings_routes.router)
 
 
 @app.get("/api/v1/status")
