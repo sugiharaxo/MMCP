@@ -198,9 +198,9 @@ for schema in tool_schemas:
 
 ### Context Injection Pattern
 
-- **Current**: Tools fetch context directly (e.g., `os.getenv("API_KEY")`)
-- **Future**: Context object passed to all tool executions
-- **Migration**: Incremental, tool-by-tool basis
+- **Current**: Context object passed to all tool executions via declarative plugin configuration system
+- **Implementation**: Namespaced environment variables (`MMCP_PLUGIN_{SLUG}_`) with SecretStr masking for credentials
+- **Loading**: Two-phase system - static validation on startup, runtime context injection per tool execution
 
 ### Circuit Breaker Logic
 

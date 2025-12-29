@@ -53,7 +53,47 @@ Do not deviate from this stack unless explicitly requested.
 4.  **Error Handling:** Fail gracefully. If a scraper breaks, log it and return a structured error, do not crash the server.
 5.  **Environment:** Config comes from `.env` files (using `pydantic-settings`).
 
-## 5. Documentation Index
+## 6. Declarative Plugin Configuration System
+
+All plugins use a standardized configuration system that ensures type safety, security, and consistent naming:
+
+### Environment Variable Naming Pattern
+
+- **Format**: `MMCP_PLUGIN_{PLUGIN_SLUG}_{SETTING_NAME}`
+- **Example**: `MMCP_PLUGIN_TMDB_API_KEY` for TMDB plugin API key
+- **Case**: Uppercase with underscores for separation
+
+### Configuration Classes
+
+- **Base**: `PluginConfig` (abstract base class)
+- **Implementation**: Each plugin defines a config class inheriting from `PluginConfig`
+- **Validation**: Pydantic v2 with strict type hints
+- **Secrets**: Use `SecretStr` for sensitive values (API keys, passwords) - automatically masked in logs
+
+### Two-Phase Loading System
+
+#### Phase 1: Static Validation (Startup)
+
+- Configuration loaded and validated at application startup
+- Environment variables resolved and type-checked
+- Plugin initialization blocked if required settings missing
+- Errors reported immediately, preventing runtime failures
+
+#### Phase 2: Runtime Context Injection (Per Execution)
+
+- Validated config object passed to each tool execution
+- Context isolation - tools cannot access global state directly
+- Consistent interface across all plugins
+- Enables dependency injection and testing
+
+### Security Features
+
+- **Secret Masking**: `SecretStr` values never logged in plain text
+- **Namespace Isolation**: Plugin configs cannot conflict with each other
+- **Type Safety**: Runtime guarantees about config structure
+- **No Global Access**: Tools receive only their declared dependencies
+
+## 7. Documentation Index
 
 **Core Architecture:**
 
