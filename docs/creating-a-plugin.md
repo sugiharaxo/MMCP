@@ -29,6 +29,7 @@ The logger is automatically namespaced: `mmcp.{plugin_name}.{tool_name}`
 ### 2. Managed Settings
 
 Settings are automatically loaded from:
+
 1. **Environment Variables**: `MMCP_PLUGIN_{PLUGIN_SLUG}_{FIELD_NAME}`
 2. **Database**: User-configured values via API
 3. **Defaults**: Pydantic model defaults
@@ -51,11 +52,13 @@ server_version = self.context.server_info.get("version")
 ```
 
 **Available in `config`**:
+
 - `root_dir: Path` - Root directory for file operations
 - `download_dir: Path` - Directory for downloaded media files
 - `cache_dir: Path` - Directory for cache files
 
 **Available in `server_info`**:
+
 - `version: str` - MMCP version
 - `environment: str` - Environment (development/production)
 
@@ -137,11 +140,13 @@ MMCP_PLUGIN_{PLUGIN_SLUG}_{FIELD_NAME}
 ```
 
 **Examples**:
+
 - Plugin name: `my_plugin` → Slug: `MY_PLUGIN`
 - Field: `api_key` → `MMCP_PLUGIN_MY_PLUGIN_API_KEY`
 - Nested field: `nested.field` → `MMCP_PLUGIN_MY_PLUGIN_NESTED__FIELD` (double underscore)
 
 **Slugification Rules**:
+
 - Non-alphanumeric characters become underscores
 - Uppercased
 - Multiple underscores collapsed
@@ -179,6 +184,7 @@ class MyPlugin(Plugin):
 ```
 
 **Context Provider Guidelines**:
+
 - Keep `is_eligible()` lightweight (no I/O)
 - Use `provide_context()` for actual data fetching
 - Return `ContextResponse` with `data`, `ttl`, and `provider_name`
@@ -249,9 +255,17 @@ class TMDb(Plugin):
                 if not results:
                     return {"error": f"No results found for '{title}'"}
 
+                release_date = results[0].get("release_date")
+                year = None
+                if release_date:
+                    try:
+                        year = int(release_date.split("-")[0])
+                    except (ValueError, IndexError):
+                        pass
+
                 return {
                     "title": results[0].get("title"),
-                    "year": results[0].get("release_date", "").split("-")[0] if results[0].get("release_date") else None,
+                    "year": year,
                     "overview": results[0].get("overview"),
                     "tmdb_id": results[0].get("id"),
                 }
@@ -260,6 +274,7 @@ class TMDb(Plugin):
 ```
 
 **Configuration**:
+
 ```bash
 # Set environment variable
 export MMCP_PLUGIN_TMDB_API_KEY="your_api_key_here"
@@ -303,4 +318,3 @@ The loader automatically discovers plugins in this directory.
 - See `app/plugins/core_foundation/providers.py` for a complete Provider example
 - Check `docs/agent-loop.md` for agent interaction patterns
 - Review `docs/devs.md` for project philosophy and standards
-
