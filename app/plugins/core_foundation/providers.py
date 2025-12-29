@@ -53,5 +53,5 @@ class Foundation(Plugin):
                     "host_os": platform.system(),
                 },
                 ttl=0,
-                provider_name="IdentityProvider",
+                provider_name="Identity",
             )
