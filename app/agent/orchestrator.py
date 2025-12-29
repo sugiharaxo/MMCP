@@ -146,9 +146,13 @@ Use tools when you need specific information or actions. When you have enough in
             # No tools available - can only return FinalResponse
             return FinalResponse
 
-        # Build Union using typing.Union (not | operator) for Instructor compatibility
-        # Use reduce with typing.Union instead of | operator
-        ResponseModel = reduce(lambda acc, schema: Union[acc, schema], tool_schemas, FinalResponse)
+        # Build Union using typing.Union for dynamic construction in reduce()
+        # Note: Python automatically normalizes nested Unions (Union[Union[A, B], C] -> Union[A, B, C])
+        # We use typing.Union (not | operator) because:
+        # 1. The | operator cannot be used in reduce() lambda expressions
+        # 2. typing.Union is more explicit and compatible with Instructor/Pydantic
+        # 3. Instructor (via Pydantic) handles Union types correctly for discriminated unions
+        ResponseModel = reduce(lambda acc, schema: Union[acc, schema], tool_schemas, FinalResponse)  # noqa: UP007
 
         return ResponseModel
 
