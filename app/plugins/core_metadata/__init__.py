@@ -1,5 +1,5 @@
 """Core metadata lookup plugin using TMDb."""
 
-from app.plugins.core_metadata.tmdb import TMDbLookupTool
+from .tmdb import TMDb
 
-__all__ = ["TMDbLookupTool"]
+__all__ = ["TMDb"]
