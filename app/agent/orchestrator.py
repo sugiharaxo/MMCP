@@ -141,8 +141,9 @@ Use tools when you need specific information or actions. When you have enough in
 
         alerts = ["DISABLED CAPABILITIES (SYSTEM ERRORS):"]
         for name, tool in standby.items():
-            # Get the system-managed error (e.g., 'Configuration validation failed')
-            reason = self.loader._plugin_config_errors.get(name, "Unknown system error")
+            # Get plugin name for error lookup (settings are stored at plugin level)
+            plugin_name = tool.plugin_name
+            reason = self.loader._plugin_config_errors.get(plugin_name, "Unknown system error")
             alerts.append(f"- {name}: {reason}")
 
         return "\n".join(alerts)
@@ -369,16 +370,9 @@ Use tools when you need specific information or actions. When you have enough in
             Tool result as string, or error message if execution failed
         """
         try:
-            # Create PluginContext for tool execution (tools expect PluginContext, not MMCPContext)
-            plugin_context = self.loader.create_plugin_context()
-
-            # Retrieve plugin settings loaded in Phase 1
-            settings = self.loader._plugin_settings.get(tool_name, None)
-
-            # Execute tool with PluginContext, settings, and validated arguments
-            result = await asyncio.wait_for(
-                tool.execute(plugin_context, settings, **args), timeout=30.0
-            )
+            # Execute tool with validated arguments
+            # Tool already has context and settings injected via __init__ (self.context, self.settings)
+            result = await asyncio.wait_for(tool.execute(**args), timeout=30.0)
             return str(result) if result is not None else "Tool executed successfully.", False
 
         except Exception as e:
@@ -568,12 +562,13 @@ Use tools when you need specific information or actions. When you have enough in
 
             if is_standby:
                 # Tool is on standby - return user-friendly error with setup instructions
-                config_error = self.loader._plugin_config_errors.get(tool_name, "Setup required")
-                # Build helpful error message with env var names
-                env_prefix = f"MMCP_PLUGIN_{self.loader._slugify_plugin_name(tool_name)}_"
+                # Get plugin name for error lookup (settings are stored at plugin level)
+                plugin_name = tool.plugin_name
+                config_error = self.loader._plugin_config_errors.get(plugin_name, "Setup required")
+                env_prefix = f"MMCP_PLUGIN_{self.loader._slugify_plugin_name(plugin_name)}_"
                 result = (
                     f"Tool '{tool_name}' is on standby. {config_error}. "
-                    f"Set environment variables starting with '{env_prefix}' or configure via the Web UI at /api/v1/settings/plugins/{self.loader._slugify_plugin_name(tool_name).lower()}."
+                    f"Set environment variables starting with '{env_prefix}' or configure via the Web UI at /api/v1/settings/plugins/{self.loader._slugify_plugin_name(plugin_name).lower()}."
                 )
                 logger.info(
                     f"Standby tool '{tool_name}' was called (trace_id={trace_id})",

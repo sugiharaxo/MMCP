@@ -46,6 +46,10 @@ def mock_tool():
         # Optional settings_model (Null Object Pattern if None)
         settings_model = MockSettings
 
+        def __init__(self):
+            # Set plugin_name attribute (required by Tool base class)
+            self.plugin_name = "mock_plugin"
+
         @property
         def name(self) -> str:
             return "mock_tool"
@@ -66,8 +70,8 @@ def mock_tool():
             """New signature: receives settings and context."""
             return True
 
-        async def execute(self, _context, _settings: BaseModel, test_param: str) -> dict:
-            """New signature: receives context, settings, then kwargs."""
+        async def execute(self, test_param: str) -> dict:
+            """Tool execution signature: kwargs only (context/settings are in self)."""
             return {"result": f"Processed: {test_param}"}
 
     return MockTool()

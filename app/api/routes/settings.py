@@ -83,22 +83,21 @@ async def list_plugins(
     """
     plugins_info: dict[str, PluginSettingsInfo] = {}
 
-    # Combine active and standby tools
-    all_tools = {**loader.tools, **loader.standby_tools}
+    # Iterate over plugins directly (cleaner than filtering through tools)
+    for plugin_name, plugin in loader.plugins.items():
+        # Use plugin name for slug (settings are stored at plugin level)
+        plugin_slug = loader._slugify_plugin_name(plugin_name)
+        locked_fields = loader._locked_fields.get(plugin_name, set())
 
-    for tool_name, tool in all_tools.items():
-        plugin_slug = loader._slugify_plugin_name(tool_name)
-        locked_fields = loader._locked_fields.get(tool_name, set())
-
-        # Get settings schema if plugin has one
+        # Get settings schema from plugin
         settings_schema_fields: list[PluginSettingSchema] = []
         current_values: dict[str, Any] = {}
+        settings_model = plugin.settings_model
 
-        if hasattr(tool, "settings_model") and tool.settings_model is not None:
-            settings_model = tool.settings_model
+        if settings_model is not None:
             model_schema = settings_model.model_json_schema()
 
-            # Get current settings (merged from defaults/db/env)
+            # Get current settings (merged from defaults/db/env) using plugin slug
             current_settings, _, _ = await settings_manager.get_plugin_settings(
                 plugin_slug, settings_model
             )
@@ -137,12 +136,15 @@ async def list_plugins(
                     else:
                         current_values[field_name] = value
 
+        # Check if plugin is available (has at least one active tool)
+        plugin_is_available = any(t.plugin_name == plugin_name for t in loader.tools.values())
+
         plugins_info[plugin_slug.lower()] = PluginSettingsInfo(
             slug=plugin_slug.lower(),
-            name=tool_name,
-            version=tool.version,
-            description=tool.description,
-            is_available=tool_name in loader.tools,
+            name=plugin_name,
+            version=plugin.version,
+            description=f"Plugin: {plugin_name}",
+            is_available=plugin_is_available,
             settings_schema=settings_schema_fields,
             current_values=current_values,
         )
@@ -164,32 +166,32 @@ async def update_plugin_settings(
     Validates settings against plugin's schema and saves to database.
     Returns 409 Conflict if trying to update a locked field (set via environment variable).
     """
-    # Find plugin by slug
+    # Find plugin by slug (settings are stored at plugin level)
     plugin_slug_upper = slug.upper()
-    tool = None
-    tool_name = None
+    plugin = None
 
-    # Search in both active and standby tools
-    for name, t in {**loader.tools, **loader.standby_tools}.items():
+    # Search through plugins directly
+    for name, p in loader.plugins.items():
         if loader._slugify_plugin_name(name) == plugin_slug_upper:
-            tool = t
-            tool_name = name
+            plugin = p
             break
 
-    if not tool:
+    if not plugin:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Plugin with slug '{slug}' not found",
         )
 
+    plugin_name = plugin.name
+
     # Check if plugin has settings model
-    if not hasattr(tool, "settings_model") or tool.settings_model is None:
+    if not plugin.settings_model:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Plugin '{tool_name}' does not have configurable settings",
+            detail=f"Plugin '{plugin_name}' does not have configurable settings",
         )
 
-    locked_fields = loader._locked_fields.get(tool_name, set())
+    locked_fields = loader._locked_fields.get(plugin_name, set())
 
     # Check for locked fields
     for field_name in request.settings:
@@ -200,7 +202,7 @@ async def update_plugin_settings(
             )
 
     # Get current settings to merge with new values
-    settings_model = tool.settings_model
+    settings_model = plugin.settings_model
     current_settings, _, _ = await settings_manager.get_plugin_settings(
         plugin_slug_upper, settings_model
     )
@@ -245,13 +247,13 @@ async def update_plugin_settings(
 
         await settings_manager.save_plugin_setting(plugin_slug_upper, key, value_str)
 
-    logger.info(f"Updated settings for plugin '{tool_name}': {list(request.settings.keys())}")
+    logger.info(f"Updated settings for plugin '{plugin_name}': {list(request.settings.keys())}")
 
     # Reload plugin settings (this will trigger a reload on next request)
     # For now, just return success - full reload would require restart or hot reload
     return {
         "success": True,
-        "message": f"Settings updated for plugin '{tool_name}'. Restart required for changes to take effect.",
+        "message": f"Settings updated for plugin '{plugin_name}'. Restart required for changes to take effect.",
         "updated_fields": list(request.settings.keys()),
     }
 
@@ -269,32 +271,32 @@ async def reveal_secret(
 
     Uses POST to avoid logging secrets in URL or access logs.
     """
-    # Find plugin by slug
+    # Find plugin by slug (settings are stored at plugin level)
     plugin_slug_upper = slug.upper()
-    tool = None
-    tool_name = None
+    plugin = None
 
-    # Search in both active and standby tools
-    for name, t in {**loader.tools, **loader.standby_tools}.items():
+    # Search through plugins directly
+    for name, p in loader.plugins.items():
         if loader._slugify_plugin_name(name) == plugin_slug_upper:
-            tool = t
-            tool_name = name
+            plugin = p
             break
 
-    if not tool:
+    if not plugin:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Plugin with slug '{slug}' not found",
         )
 
+    plugin_name = plugin.name
+
     # Check if plugin has settings model
-    if not hasattr(tool, "settings_model") or tool.settings_model is None:
+    if not plugin.settings_model:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Plugin '{tool_name}' does not have configurable settings",
+            detail=f"Plugin '{plugin_name}' does not have configurable settings",
         )
 
-    settings_model = tool.settings_model
+    settings_model = plugin.settings_model
 
     # Get current settings
     current_settings, _, _ = await settings_manager.get_plugin_settings(
@@ -304,7 +306,7 @@ async def reveal_secret(
     if not current_settings:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Settings not found for plugin '{tool_name}'",
+            detail=f"Settings not found for plugin '{plugin_name}'",
         )
 
     # Get the field value
@@ -322,6 +324,6 @@ async def reveal_secret(
     else:
         revealed_value = str(field_value)
 
-    logger.info(f"Secret field '{request.field}' revealed for plugin '{tool_name}'")
+    logger.info(f"Secret field '{request.field}' revealed for plugin '{plugin_name}'")
 
     return RevealSecretResponse(field=request.field, value=revealed_value)
