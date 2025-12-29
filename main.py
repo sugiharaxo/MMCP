@@ -165,7 +165,7 @@ async def general_exception_handler(_request: Request, exc: Exception) -> JSONRe
 @app.get("/api/v1/status")
 async def get_status():
     """Health check endpoint with generic plugin status."""
-    plugin_statuses = loader.get_plugin_statuses()
+    plugin_statuses = await loader.get_plugin_statuses()
 
     return {
         "status": "online",

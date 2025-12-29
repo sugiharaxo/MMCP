@@ -1,11 +1,10 @@
-import os
 from typing import Any
 
 from curl_cffi.requests import AsyncSession, RequestsError
 from pydantic import BaseModel, Field
 
-from app.core.context import MMCPContext
-from app.core.plugin_interface import MMCPTool
+# IMPORT FROM SDK ONLY
+from mmcp import PluginContext
 
 
 # 1. Define Input Schema
@@ -15,8 +14,8 @@ class TMDbMetadataInput(BaseModel):
     type: str = Field("movie", description="Type of media: 'movie' or 'tv'")
 
 
-# 2. Define Logic
-class TMDbLookupTool(MMCPTool):
+# 2. Define Logic - Using mmcp.Tool Protocol
+class TMDbLookupTool:
     """
     TMDb Metadata Lookup Tool.
 
@@ -29,12 +28,12 @@ class TMDbLookupTool(MMCPTool):
         return "tmdb_lookup_metadata"
 
     @property
-    def status_description(self) -> str:
-        return "Movie/TV metadata lookup via TMDb API"
-
-    @property
     def description(self) -> str:
         return "Finds movie/TV show metadata (ID, year, overview, poster) using The Movie Database (TMDb) API."
+
+    @property
+    def version(self) -> str:
+        return "1.0.0"
 
     @property
     def input_schema(self) -> type[BaseModel]:
@@ -44,23 +43,22 @@ class TMDbLookupTool(MMCPTool):
         """
         Check if TMDb API key is configured.
 
-        Note: This method doesn't have access to context, so it checks env directly.
-        The execute() method uses context-injected config for actual execution.
         """
         import os
 
         return bool(os.getenv("TMDB_API_KEY"))
 
-    def get_status_info(self) -> dict[str, Any]:
+    def get_extra_info(self) -> dict[str, Any]:
         """
-        Return TMDb plugin status information.
+        Return plugin-specific extra status information.
 
-        Plugin manages its own status - no core knowledge needed.
+        This is optional - the Core will call this if it exists to populate
+        the 'extra' field in PluginStatus. This allows plugins to provide
+        additional metadata without implementing full status generation.
         """
         return {
-            "service_name": "TMDb API",
-            "configured": self.is_available(),
-            "description": self.status_description,
+            "api_endpoint": "https://api.themoviedb.org/3",
+            "docs": "https://developer.themoviedb.org",
         }
 
     def _extract_year(self, date_str: str | None) -> int | None:
@@ -74,25 +72,18 @@ class TMDbLookupTool(MMCPTool):
             return None
 
     async def execute(
-        self, context: MMCPContext, title: str, year: int | None = None, type: str = "movie"
+        self, context: PluginContext, title: str, year: int | None = None, type: str = "movie"
     ) -> dict[str, Any]:
         """
         Queries TMDb API v3 for content metadata.
 
         Uses modern Bearer token authentication (API Read Access Token).
-        Context injection ensures tools never fetch config themselves - all config
-        comes from MMCPContext.static.config for security and testability.
+        PluginContext facade provides secure access to secrets without exposing core internals.
         """
-        # Inject plugin config into context if not already present
-        if "TMDB_API_KEY" not in context.static.config:
-            api_key_value = os.getenv("TMDB_API_KEY")
-            context.inject_plugin_config("TMDB_API_KEY", api_key_value)
+        api_key = context.get_config_value("TMDB_API_KEY")
 
-        # Use context-injected secrets/config instead of os.getenv
-        # This allows us to mock configs during testing or change providers easily
-        api_key = context.static.config.get("TMDB_API_KEY")
         if not api_key:
-            return {"error": "TMDB_API_KEY is not configured in the system context."}
+            return {"error": "TMDB_API_KEY not found in plugin configuration."}
 
         # TMDb API v3 endpoint: /search/movie or /search/tv
         url = f"https://api.themoviedb.org/3/search/{type}"

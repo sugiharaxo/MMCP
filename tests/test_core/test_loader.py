@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from app.core.plugin_loader import PluginLoader
 
 
@@ -24,10 +26,8 @@ def test_load_plugins_with_valid_plugin(plugin_dir: Path):
 
     from pydantic import BaseModel
 
-    from app.core.plugin_interface import MMCPTool
-
-    # Create a proper TestTool class that inherits from MMCPTool
-    class TestTool(MMCPTool):
+    # Create a proper TestTool class that implements Tool protocol
+    class TestTool:
         @property
         def name(self) -> str:
             return "test_tool"
@@ -37,17 +37,23 @@ def test_load_plugins_with_valid_plugin(plugin_dir: Path):
             return "A test tool"
 
         @property
+        def version(self) -> str:
+            return "1.0.0"
+
+        @property
         def input_schema(self):
             return BaseModel
 
         def is_available(self) -> bool:
             return True
 
-        async def execute(self, **_kwargs) -> dict:
+        async def execute(self, _, **_kwargs) -> dict:
             return {"result": "test"}
 
     # Create a mock module with the TestTool class
-    mock_module = MagicMock()
+    import types
+
+    mock_module = types.ModuleType("test_plugin")
     mock_module.TestTool = TestTool
 
     loader = PluginLoader(plugin_dir)
@@ -94,10 +100,8 @@ def test_get_tool_unavailable(plugin_dir: Path):
 
     from pydantic import BaseModel
 
-    from app.core.plugin_interface import MMCPTool
-
-    # Create a proper UnavailableTool class that inherits from MMCPTool
-    class UnavailableTool(MMCPTool):
+    # Create a proper UnavailableTool class that implements Tool protocol
+    class UnavailableTool:
         @property
         def name(self) -> str:
             return "unavailable_tool"
@@ -107,17 +111,23 @@ def test_get_tool_unavailable(plugin_dir: Path):
             return "An unavailable tool"
 
         @property
+        def version(self) -> str:
+            return "1.0.0"
+
+        @property
         def input_schema(self):
             return BaseModel
 
         def is_available(self) -> bool:
             return False  # Tool is not available
 
-        async def execute(self, **_kwargs) -> dict:
+        async def execute(self, _, **_kwargs) -> dict:
             return {}
 
     # Create a mock module with the UnavailableTool class
-    mock_module = MagicMock()
+    import types
+
+    mock_module = types.ModuleType("test_plugin")
     mock_module.UnavailableTool = UnavailableTool
 
     loader = PluginLoader(plugin_dir)
@@ -132,3 +142,79 @@ def test_get_tool_unavailable(plugin_dir: Path):
 
     # Tool should not be loaded because it's unavailable
     assert "unavailable_tool" not in loader.list_tools()
+
+
+@pytest.mark.asyncio
+async def test_get_tool_status_sync(loader: PluginLoader, mock_tool):
+    """Test get_tool_status with sync is_available()."""
+    loader.tools["mock_tool"] = mock_tool
+
+    status = await loader.get_tool_status(mock_tool)
+
+    assert status.service_name == "mock_tool"
+    assert status.version == "1.0.0"
+    assert status.description == "A mock tool for testing"
+    assert status.is_available is True
+    assert status.extra == {}
+
+
+@pytest.mark.asyncio
+async def test_get_tool_status_async():
+    """Test get_tool_status with async is_available()."""
+    from pydantic import BaseModel
+
+    from app.core.plugin_loader import PluginLoader
+
+    class AsyncTool:
+        @property
+        def name(self) -> str:
+            return "async_tool"
+
+        @property
+        def description(self) -> str:
+            return "An async tool"
+
+        @property
+        def version(self) -> str:
+            return "2.0.0"
+
+        @property
+        def input_schema(self):
+            return BaseModel
+
+        async def is_available(self) -> bool:
+            # Simulate async I/O check
+            import asyncio
+
+            await asyncio.sleep(0.01)
+            return True
+
+        def get_extra_info(self) -> dict:
+            return {"async": True, "test": "data"}
+
+        async def execute(self, _, **_kwargs) -> dict:
+            return {"result": "async"}
+
+    loader = PluginLoader(Path("/tmp"))
+    tool = AsyncTool()
+    loader.tools["async_tool"] = tool
+
+    status = await loader.get_tool_status(tool)
+
+    assert status.service_name == "async_tool"
+    assert status.version == "2.0.0"
+    assert status.description == "An async tool"
+    assert status.is_available is True
+    assert status.extra == {"async": True, "test": "data"}
+
+
+@pytest.mark.asyncio
+async def test_get_plugin_statuses(loader: PluginLoader, mock_tool):
+    """Test get_plugin_statuses aggregates status from all tools."""
+    loader.tools["mock_tool"] = mock_tool
+
+    statuses = await loader.get_plugin_statuses()
+
+    assert "mock_tool" in statuses
+    assert statuses["mock_tool"].service_name == "mock_tool"
+    assert statuses["mock_tool"].is_available is True
