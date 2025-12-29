@@ -5,6 +5,10 @@ The official SDK for developing plugins for the Modular Media Control Plane.
 
 Example:
     from mmcp import Plugin, Tool, Provider, PluginContext
+    from pydantic import BaseModel
+
+    class MyInputSchema(BaseModel):
+        message: str
 
     class MyPlugin(Plugin):
         name = "my_plugin"
