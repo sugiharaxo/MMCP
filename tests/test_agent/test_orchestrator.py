@@ -1,5 +1,6 @@
 """Tests for agent orchestrator."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -56,8 +57,15 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
     mock_tool.execute = AsyncMock(return_value={"result": "Tool executed"})
     orchestrator.loader.get_tool_by_schema.return_value = mock_tool
     # Mock create_plugin_context to return a real PluginContext
-    mock_plugin_context = PluginContext(config={}, server_info={})
+    from app.core.config import CoreSettings
+
+    mock_plugin_context = PluginContext(
+        config=CoreSettings(root_dir=Path("/"), download_dir=Path("/"), cache_dir=Path("/")),
+        server_info={},
+    )
     orchestrator.loader.create_plugin_context.return_value = mock_plugin_context
+    # Mock plugin settings (None for tools without settings)
+    orchestrator.loader._plugin_settings = {"test_tool": None}
 
     # First call: tool input schema, Second call: final response
     tool_input = TestToolInput(param="value")
@@ -69,11 +77,13 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
         result = await orchestrator.chat("Test message")
 
         assert result == "Done"
-        # Verify tool was called with context and params
+        # Verify tool was called with context, settings, and params
         args, kwargs = mock_tool.execute.call_args
-        assert len(args) == 1
-        assert isinstance(args[0], PluginContext)  # First arg is PluginContext (fixed type)
+        assert len(args) == 2
+        assert isinstance(args[0], PluginContext)  # First arg is PluginContext
         assert args[0] is mock_plugin_context  # Verify it's our mocked context
+        # Second arg is settings (BaseModel | None)
+        assert args[1] is None or isinstance(args[1], BaseModel)
         assert kwargs == {"param": "value"}
 
 

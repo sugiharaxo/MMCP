@@ -28,6 +28,8 @@ def test_load_plugins_with_valid_plugin(plugin_dir: Path):
 
     # Create a proper TestTool class that implements Tool protocol
     class TestTool:
+        settings_model = None  # No settings required
+
         @property
         def name(self) -> str:
             return "test_tool"
@@ -44,10 +46,10 @@ def test_load_plugins_with_valid_plugin(plugin_dir: Path):
         def input_schema(self):
             return BaseModel
 
-        def is_available(self) -> bool:
+        def is_available(self, _settings, _context) -> bool:
             return True
 
-        async def execute(self, _, **_kwargs) -> dict:
+        async def execute(self, _context, _settings, **_kwargs) -> dict:
             return {"result": "test"}
 
     # Create a mock module with the TestTool class
@@ -102,6 +104,8 @@ def test_get_tool_unavailable(plugin_dir: Path):
 
     # Create a proper UnavailableTool class that implements Tool protocol
     class UnavailableTool:
+        settings_model = None  # No settings required
+
         @property
         def name(self) -> str:
             return "unavailable_tool"
@@ -118,10 +122,10 @@ def test_get_tool_unavailable(plugin_dir: Path):
         def input_schema(self):
             return BaseModel
 
-        def is_available(self) -> bool:
+        def is_available(self, _settings, _context) -> bool:
             return False  # Tool is not available
 
-        async def execute(self, _, **_kwargs) -> dict:
+        async def execute(self, _context, _settings, **_kwargs) -> dict:
             return {}
 
     # Create a mock module with the UnavailableTool class
@@ -147,7 +151,10 @@ def test_get_tool_unavailable(plugin_dir: Path):
 @pytest.mark.asyncio
 async def test_get_tool_status_sync(loader: PluginLoader, mock_tool):
     """Test get_tool_status with sync is_available()."""
+
     loader.tools["mock_tool"] = mock_tool
+    # Set up plugin settings (loaded in Phase 1) - None for tools without settings
+    loader._plugin_settings["mock_tool"] = None
 
     status = await loader.get_tool_status(mock_tool)
 
@@ -160,12 +167,14 @@ async def test_get_tool_status_sync(loader: PluginLoader, mock_tool):
 
 @pytest.mark.asyncio
 async def test_get_tool_status_async():
-    """Test get_tool_status with async is_available()."""
+    """Test get_tool_status with async is_available() (protocol specifies sync, but test edge case)."""
     from pydantic import BaseModel
 
     from app.core.plugin_loader import PluginLoader
 
     class AsyncTool:
+        settings_model = None  # No settings required
+
         @property
         def name(self) -> str:
             return "async_tool"
@@ -182,7 +191,8 @@ async def test_get_tool_status_async():
         def input_schema(self):
             return BaseModel
 
-        async def is_available(self) -> bool:
+        # Note: Protocol specifies sync, but test edge case where someone implements async
+        async def is_available(self, _settings, _context) -> bool:
             # Simulate async I/O check
             import asyncio
 
@@ -192,7 +202,7 @@ async def test_get_tool_status_async():
         def get_extra_info(self) -> dict:
             return {"async": True, "test": "data"}
 
-        async def execute(self, _, **_kwargs) -> dict:
+        async def execute(self, _context, _settings, **_kwargs) -> dict:
             return {"result": "async"}
 
     loader = PluginLoader(Path("/tmp"))

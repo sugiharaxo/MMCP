@@ -62,19 +62,45 @@ class Tool(Protocol):
         """
         ...
 
-    def is_available(self) -> bool:
+    @property
+    def settings_model(self) -> type[BaseModel] | None:
         """
-        Check if this tool is available (e.g., required API keys are configured).
+        Optional Pydantic BaseModel defining this tool's configuration requirements.
 
-        Override this method to check configuration requirements.
-        If False, the plugin loader will skip loading this tool.
+        If None, the tool has no configuration requirements. The settings parameter will be None in is_available() and execute().
+        The loader will discover and validate settings from namespaced environment variables
+        using the pattern: MMCP_PLUGIN_{SLUG}_{FIELD_NAME}.
+
+        Example:
+            class MySettings(BaseModel):
+                api_key: SecretStr
+                language: str = "en-US"
+
+            class MyTool:
+                settings_model = MySettings
+                ...
+        """
+        ...
+
+    def is_available(self, settings: BaseModel | None, context: PluginContext) -> bool:
+        """
+        Check if this tool is available given its settings and system context.
+
+        Called in Phase 2 after all plugins are discovered, ensuring complete context.
+        Can check both private settings (e.g., API keys) and global context (e.g., other tools).
+
+        Args:
+            settings: Validated settings instance (BaseModel) for this tool, or None if no settings_model defined
+            context: Complete PluginContext with access to all system state
 
         Returns:
             True if the tool can be used, False otherwise.
         """
         ...
 
-    async def execute(self, context: PluginContext, **kwargs: Any) -> Any:
+    async def execute(
+        self, context: PluginContext, settings: BaseModel | None, **kwargs: Any
+    ) -> Any:
         """
         The actual logic.
 
@@ -82,6 +108,7 @@ class Tool(Protocol):
 
         Args:
             context: PluginContext with safe access to system state
+            settings: Validated settings instance (BaseModel) for this tool, or None if no settings_model defined
             **kwargs: valid data matching input_schema.
 
         Returns:

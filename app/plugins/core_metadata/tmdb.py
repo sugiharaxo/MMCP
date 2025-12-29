@@ -1,7 +1,7 @@
 from typing import Any
 
 from curl_cffi.requests import AsyncSession, RequestsError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 # IMPORT FROM SDK ONLY
 from mmcp import PluginContext
@@ -14,7 +14,19 @@ class TMDbMetadataInput(BaseModel):
     type: str = Field("movie", description="Type of media: 'movie' or 'tv'")
 
 
-# 2. Define Logic - Using mmcp.Tool Protocol
+# 2. Define Settings Model (BaseModel, NOT BaseSettings - loader handles env loading)
+class TMDbSettings(BaseModel):
+    """
+    TMDb plugin configuration.
+
+    Loader will load from: MMCP_PLUGIN_TMDB_LOOKUP_METADATA_API_KEY
+    """
+
+    api_key: SecretStr  # Required - loader will validate
+    language: str = "en-US"  # Optional default
+
+
+# 3. Define Logic - Using mmcp.Tool Protocol
 class TMDbLookupTool:
     """
     TMDb Metadata Lookup Tool.
@@ -22,6 +34,9 @@ class TMDbLookupTool:
     This product uses the TMDb API but is not endorsed or certified by TMDb.
     See: https://www.themoviedb.org/api-terms-of-use
     """
+
+    # Declarative settings model (loader will discover and validate)
+    settings_model = TMDbSettings
 
     @property
     def name(self) -> str:
@@ -39,14 +54,19 @@ class TMDbLookupTool:
     def input_schema(self) -> type[BaseModel]:
         return TMDbMetadataInput
 
-    def is_available(self) -> bool:
+    def is_available(self, settings: TMDbSettings | None, context: PluginContext) -> bool:
         """
         Check if TMDb API key is configured.
 
         """
-        import os
-
-        return bool(os.getenv("TMDB_API_KEY"))
+        if settings is None:
+            return False
+        try:
+            # Access SecretStr safely - get_secret_value() returns the actual string
+            return bool(settings.api_key.get_secret_value())
+        except Exception:
+            # If settings validation failed or settings is None
+            return False
 
     def get_extra_info(self) -> dict[str, Any]:
         """
@@ -72,18 +92,26 @@ class TMDbLookupTool:
             return None
 
     async def execute(
-        self, context: PluginContext, title: str, year: int | None = None, type: str = "movie"
+        self,
+        context: PluginContext,
+        settings: TMDbSettings | None,
+        title: str,
+        year: int | None = None,
+        type: str = "movie",
     ) -> dict[str, Any]:
         """
         Queries TMDb API v3 for content metadata.
 
         Uses modern Bearer token authentication (API Read Access Token).
-        PluginContext facade provides secure access to secrets without exposing core internals.
+        Settings are validated and injected by the loader.
         """
-        api_key = context.get_config_value("TMDB_API_KEY")
+        if settings is None:
+            return {
+                "error": "TMDb API key not configured. Set MMCP_PLUGIN_TMDB_LOOKUP_METADATA_API_KEY environment variable."
+            }
 
-        if not api_key:
-            return {"error": "TMDB_API_KEY not found in plugin configuration."}
+        # Access SecretStr safely - get_secret_value() returns the actual string
+        api_key = settings.api_key.get_secret_value()
 
         # TMDb API v3 endpoint: /search/movie or /search/tv
         url = f"https://api.themoviedb.org/3/search/{type}"

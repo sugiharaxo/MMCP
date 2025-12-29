@@ -9,6 +9,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.config import CoreSettings
+
 
 class ContextResponse(BaseModel):
     """
@@ -61,20 +63,8 @@ class PluginContext(BaseModel):
     """
 
     # Safe configuration access (read-only subset of settings)
-    config: dict[str, Any]
+    # Changed from dict[str, Any] to CoreSettings for type safety
+    config: CoreSettings
 
     # System information (read-only)
     server_info: dict[str, Any]
-
-    def get_config_value(self, key: str, default: Any = None) -> Any:
-        """
-        Get a configuration value safely.
-
-        Args:
-            key: Configuration key to retrieve
-            default: Default value if key not found
-
-        Returns:
-            The configuration value or default
-        """
-        return self.config.get(key, default)
