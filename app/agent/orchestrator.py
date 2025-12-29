@@ -108,6 +108,9 @@ class AgentOrchestrator:
                 state_desc = "\n".join(state_parts)
                 context_section = f"CONTEXT:\n{state_desc}"
 
+        # Add standby alerts for system awareness
+        standby_alerts = self._get_standby_alerts()
+
         return f"""You are MMCP (Modular Media Control Plane), an intelligent media assistant.
 You help users manage their media library, search for metadata, and handle downloads.
 
@@ -118,10 +121,31 @@ IDENTITY:
 
 {context_section}
 
+{standby_alerts}
+
 AVAILABLE TOOLS:
 {tool_desc}
 
 Use tools when you need specific information or actions. When you have enough information to answer the user, provide a FinalResponse with your answer."""
+
+    def _get_standby_alerts(self) -> str:
+        """
+        Generate system prompt section for plugins that failed to load.
+
+        Only reports plugins that FAILED to load, providing the 'Proprioception'.
+        This keeps the context lean while enabling self-resolution.
+        """
+        standby = self.loader.standby_tools
+        if not standby:
+            return ""
+
+        alerts = ["DISABLED CAPABILITIES (SYSTEM ERRORS):"]
+        for name, tool in standby.items():
+            # Get the system-managed error (e.g., 'Configuration validation failed')
+            reason = self.loader._plugin_config_errors.get(name, "Unknown system error")
+            alerts.append(f"- {name}: {reason}")
+
+        return "\n".join(alerts)
 
     def _get_response_model(self) -> type:
         """
@@ -538,8 +562,33 @@ Use tools when you need specific information or actions. When you have enough in
                 )
                 continue
 
-            # Execute the tool with validated arguments (response is already a Pydantic model)
+            # Check if tool is in standby (not fully configured)
             tool_name = tool.name
+            is_standby = tool_name in self.loader.standby_tools
+
+            if is_standby:
+                # Tool is on standby - return user-friendly error with setup instructions
+                config_error = self.loader._plugin_config_errors.get(tool_name, "Setup required")
+                # Build helpful error message with env var names
+                env_prefix = f"MMCP_PLUGIN_{self.loader._slugify_plugin_name(tool_name)}_"
+                result = (
+                    f"Tool '{tool_name}' is on standby. {config_error}. "
+                    f"Set environment variables starting with '{env_prefix}' or configure via the Web UI at /api/v1/settings/plugins/{self.loader._slugify_plugin_name(tool_name).lower()}."
+                )
+                logger.info(
+                    f"Standby tool '{tool_name}' was called (trace_id={trace_id})",
+                    extra={"trace_id": trace_id, "tool_name": tool_name},
+                )
+                # Feed error back to LLM so it can inform the user
+                self.history.append(
+                    {
+                        "role": "user",
+                        "content": f"Observation from {tool_name}: {result}",
+                    }
+                )
+                continue
+
+            # Execute the tool with validated arguments (response is already a Pydantic model)
             # Use mode='json' to ensure SecretStr fields are masked (not stringified as SecretStr('**********'))
             tool_args = response.model_dump(mode="json")
             self._emit_status(

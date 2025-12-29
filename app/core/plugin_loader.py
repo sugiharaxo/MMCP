@@ -1,16 +1,16 @@
 import importlib
 import inspect
-import os
 import pkgutil
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from app.api.schemas import PluginContext, PluginStatus
 from app.core.config import CoreSettings, settings
 from app.core.logger import logger
+from app.core.settings_manager import SettingsManager
 from mmcp import ContextProvider, Tool
 
 if TYPE_CHECKING:
@@ -22,9 +22,12 @@ class PluginLoader:
     Responsible for discovering and instantiating tools from the 'plugins' directory.
     """
 
-    def __init__(self, plugin_dir: Path):
+    def __init__(self, plugin_dir: Path, settings_manager: SettingsManager | None = None):
         self.plugin_dir = plugin_dir
+        self.settings_manager = settings_manager or SettingsManager()
         self.tools: dict[str, Tool] = {}
+        # Standby tools: plugins that are discovered but not configured
+        self.standby_tools: dict[str, Tool] = {}
         # Reverse mapping: input_schema class -> tool instance
         self._schema_to_tool: dict[type[BaseModel], Tool] = {}
         # Context providers: context_key -> provider instance
@@ -33,6 +36,8 @@ class PluginLoader:
         self._plugin_settings: dict[str, BaseModel | None] = {}
         # Plugin config errors: tool name -> agent-friendly error message
         self._plugin_config_errors: dict[str, str] = {}
+        # Locked fields per plugin: tool name -> set of locked field names
+        self._locked_fields: dict[str, set[str]] = {}
 
     @staticmethod
     def _slugify_plugin_name(name: str) -> str:
@@ -61,98 +66,71 @@ class PluginLoader:
         slug = re.sub(r"_+", "_", slug).strip("_")
         return slug
 
-    def _load_plugin_settings(self, plugin_instance: Tool) -> BaseModel | None:
+    async def _load_plugin_settings(
+        self, plugin_instance: Tool
+    ) -> tuple[BaseModel | None, set[str]]:
         """
-        Load and validate plugin settings from namespaced environment variables.
-
-        Uses manual env var loading (not BaseSettings) for loader-controlled prefixing.
-        Supports nested configuration via double underscore (__) delimiter.
-
-        Pattern: MMCP_PLUGIN_{SLUG}_{FIELD_NAME} or MMCP_PLUGIN_{SLUG}_{NESTED__FIELD}
+        Load and validate plugin settings using SettingsManager (3-tier: defaults/db/env).
 
         Args:
             plugin_instance: Tool instance with optional settings_model attribute
 
         Returns:
-            Validated BaseModel instance, or None if no model/validation fails
+            Tuple of (validated BaseModel instance or None, set of locked field names)
         """
         # Return None if no settings_model (explicit optional)
         if not hasattr(plugin_instance, "settings_model") or plugin_instance.settings_model is None:
-            return None
+            return None, set()
 
         settings_model = plugin_instance.settings_model
 
         # Derive plugin slug using deterministic slugification
         plugin_slug = self._slugify_plugin_name(plugin_instance.name)
-        env_prefix = f"MMCP_PLUGIN_{plugin_slug}_"
 
-        # Manual env var loading (not BaseSettings) for prefix control
-        # Use case_sensitive=False for cross-platform compatibility (Windows env vars are case-insensitive)
-        env_data: dict[str, Any] = {}
-        prefix_lower = env_prefix.lower()
+        # Use SettingsManager to get settings (merges defaults/db/env)
+        settings, locked_fields, validation_error = await self.settings_manager.get_plugin_settings(
+            plugin_slug, settings_model
+        )
 
-        for env_key, env_value in os.environ.items():
-            env_key_lower = env_key.lower()
-            # Case-insensitive prefix matching
-            if env_key_lower.startswith(prefix_lower):
-                # Strip prefix to get field name
-                field_name_with_nesting = env_key_lower[len(prefix_lower) :]
-                # Handle nested configuration: double underscore (__) maps to nested model
-                # Example: MMCP_PLUGIN_TMDB_RETRY_POLICY__MAX_RETRIES -> retry_policy.max_retries
-                if "__" in field_name_with_nesting:
-                    # Split on double underscore for nesting
-                    parts = field_name_with_nesting.split("__", 1)
-                    nested_key = parts[0]
-                    nested_field = parts[1]
-                    # Build nested dict structure
-                    if nested_key not in env_data:
-                        env_data[nested_key] = {}
-                    env_data[nested_key][nested_field] = env_value
-                else:
-                    # Simple field (no nesting)
-                    env_data[field_name_with_nesting] = env_value
+        # If validation failed, translate the ValidationError into actionable environment variables
+        if validation_error is not None:
+            # HIGH-FIDELITY ERROR MAPPING: Translate Pydantic ValidationError
+            # into actionable environment variable names for the agent
+            env_prefix = f"MMCP_PLUGIN_{plugin_slug}_"
+            error_details = []
 
-        # Instantiate plugin's BaseModel directly (not BaseSettings)
-        try:
-            return settings_model(**env_data)
-        except ValidationError as e:
-            # Generate agent-friendly error message instead of raw Pydantic trace
-            missing_fields = []
-            for error in e.errors():
-                if error["type"] == "missing":
-                    field_name = error.get("loc", ("unknown",))[-1]
-                    # Reconstruct expected env var name for clarity
-                    if "__" in str(field_name):
-                        # Nested field
-                        nested_parts = str(field_name).split("__")
-                        expected_env = (
-                            f"{env_prefix}{nested_parts[0].upper()}__{nested_parts[1].upper()}"
+            for error in validation_error.errors():
+                # Extract the field path from Pydantic's location
+                loc = error.get("loc", [])
+                if isinstance(loc, (list, tuple)) and len(loc) > 0:
+                    field_path = ".".join(str(part) for part in loc)
+                    # Convert field path to environment variable name
+                    # Handle nested fields: "retry_policy.max_retries" -> "RETRY_POLICY__MAX_RETRIES"
+                    env_field = field_path.replace(".", "__").upper()
+                    env_name = f"{env_prefix}{env_field}"
+
+                    # Get error type for better messaging
+                    error_type = error.get("type", "validation_error")
+                    error_msg = error.get("msg", "invalid value")
+
+                    if error_type == "missing":
+                        error_details.append(f"{env_name} (required)")
+                    elif error_type in ("string_type", "int_type", "bool_type"):
+                        error_details.append(
+                            f"{env_name} (wrong type, expected {error_type.replace('_type', '')})"
                         )
                     else:
-                        expected_env = f"{env_prefix}{str(field_name).upper()}"
-                    missing_fields.append(expected_env)
+                        error_details.append(f"{env_name} ({error_msg})")
 
-            if missing_fields:
-                error_msg = f"Missing required environment variable(s): {', '.join(missing_fields)}"
+            if error_details:
+                error_report = f"Configuration failed: {', '.join(error_details)}"
             else:
-                # Fallback for other validation errors
-                error_summary = "; ".join(
-                    [
-                        f"{err.get('loc', ('unknown',))[-1]}: {err.get('msg', 'validation error')}"
-                        for err in e.errors()[:3]
-                    ]
-                )
-                error_msg = f"Configuration validation failed: {error_summary}"
-                if len(e.errors()) > 3:
-                    error_msg += f" (and {len(e.errors()) - 3} more)"
+                error_report = "Configuration validation failed (unknown error)"
 
-            logger.warning(
-                f"Plugin '{plugin_instance.name}' configuration validation failed: {error_msg}"
-            )
-            # Store error for agent visibility
-            self._plugin_config_errors[plugin_instance.name] = error_msg
-            # Return None if validation fails (tool will receive None in is_available/execute)
-            return None
+            self._plugin_config_errors[plugin_instance.name] = error_report
+            return None, locked_fields
+
+        return settings, locked_fields
 
     def create_plugin_context(self) -> PluginContext:
         """
@@ -177,13 +155,15 @@ class PluginLoader:
             server_info=server_info,
         )
 
-    def load_plugins(self):
+    async def load_plugins(self):
         """
         Scans the plugin directory and loads all valid Tool and ContextProvider protocol implementations.
 
         Uses two-phase loading to prevent circularity:
         - Phase 1: Discover all plugins, instantiate, load settings (config validation only)
         - Phase 2: After all plugins discovered, call is_available(settings, context) with complete context
+
+        Plugins that fail validation or availability check go into standby_tools instead of being dropped.
         """
         logger.info(f"Scanning for plugins in: {self.plugin_dir}")
 
@@ -195,7 +175,7 @@ class PluginLoader:
         discovered_tools: list[Tool] = []
         for module_info in pkgutil.iter_modules([str(self.plugin_dir)]):
             if module_info.ispkg:
-                tool = self._load_single_plugin(module_info.name)
+                tool = await self._load_single_plugin(module_info.name)
                 if tool:
                     discovered_tools.append(tool)
 
@@ -228,11 +208,13 @@ class PluginLoader:
                     self._schema_to_tool[tool.input_schema] = tool
                 logger.info(f"Loaded Tool: {tool.name} (v{tool.version})")
             else:
+                # Put in standby instead of dropping
+                self.standby_tools[tool.name] = tool
                 config_error = self._plugin_config_errors.get(tool.name)
                 reason = f" - {config_error}" if config_error else ""
-                logger.warning(f"Skipping Tool: {tool.name} (not available{reason})")
+                logger.info(f"Tool {tool.name} on standby (not available{reason})")
 
-    def _load_single_plugin(self, module_name: str) -> Tool | None:
+    async def _load_single_plugin(self, module_name: str) -> Tool | None:
         """
         Phase 1: Discover plugin, instantiate, and load settings (config validation only).
 
@@ -259,9 +241,10 @@ class PluginLoader:
 
                     # 1. Handle Tools
                     if isinstance(instance, Tool):
-                        # Phase 1: Load settings (config validation only)
-                        settings = self._load_plugin_settings(instance)
+                        # Phase 1: Load settings (config validation only) - now async
+                        settings, locked_fields = await self._load_plugin_settings(instance)
                         self._plugin_settings[instance.name] = settings
+                        self._locked_fields[instance.name] = locked_fields
 
                         # Store tool instance for Phase 2 availability check
                         tool_instance = instance
@@ -301,7 +284,8 @@ class PluginLoader:
             return None
 
     def get_tool(self, name: str) -> Tool | None:
-        return self.tools.get(name)
+        """Get tool from active tools or standby tools."""
+        return self.tools.get(name) or self.standby_tools.get(name)
 
     def get_tool_by_schema(self, schema_class: type[BaseModel]) -> Tool | None:
         """
@@ -310,13 +294,25 @@ class PluginLoader:
         Used to map LLM tool call responses (which are instances of tool input schemas)
         back to the tool instance that should execute them.
 
+        Checks active tools first, then standby tools.
+
         Args:
             schema_class: The Pydantic model class (e.g., TMDbMetadataInput)
 
         Returns:
-            The MMCPTool instance that uses this schema, or None if not found
+            The Tool instance that uses this schema, or None if not found
         """
-        return self._schema_to_tool.get(schema_class)
+        # Check active tools first
+        tool = self._schema_to_tool.get(schema_class)
+        if tool:
+            return tool
+
+        # Check standby tools
+        for standby_tool in self.standby_tools.values():
+            if hasattr(standby_tool, "input_schema") and standby_tool.input_schema == schema_class:
+                return standby_tool
+
+        return None
 
     def list_tools(self) -> dict[str, str]:
         """Returns a dict of {name: description} for the Agent."""
@@ -390,7 +386,7 @@ class PluginLoader:
 
     async def get_plugin_statuses(self) -> dict[str, PluginStatus]:
         """
-        Aggregate status information from all loaded plugins.
+        Aggregate status information from all loaded and standby plugins.
 
         Uses centralized status generation (Observer-Loader pattern) where
         the Core observes the plugin and generates status, rather than
@@ -400,7 +396,11 @@ class PluginLoader:
         perform I/O operations (e.g., validating API keys, checking service reachability).
         """
         statuses = {}
+        # Include active tools
         for name, tool in self.tools.items():
+            statuses[name] = await self.get_tool_status(tool)
+        # Include standby tools
+        for name, tool in self.standby_tools.items():
             statuses[name] = await self.get_tool_status(tool)
         return statuses
 
