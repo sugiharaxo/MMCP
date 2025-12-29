@@ -3,7 +3,10 @@
 import asyncio
 import uuid
 from functools import reduce
-from typing import Any
+from inspect import isclass
+from typing import Any, Union
+
+from pydantic import BaseModel
 
 from app.agent.schemas import FinalResponse
 from app.core.config import settings
@@ -128,16 +131,24 @@ Use tools when you need specific information or actions. When you have enough in
         """
         tool_schemas = []
         for tool in self.loader.tools.values():
-            if hasattr(tool, "input_schema") and tool.input_schema:
-                tool_schemas.append(tool.input_schema)
+            if hasattr(tool, "input_schema"):
+                schema = tool.input_schema
+                # Verify it's actually a class before adding
+                if schema and isclass(schema) and issubclass(schema, BaseModel):
+                    tool_schemas.append(schema)
+                else:
+                    logger.warning(
+                        f"Tool '{tool.name}' has invalid input_schema: {schema}. "
+                        f"Expected a BaseModel subclass."
+                    )
 
         if not tool_schemas:
             # No tools available - can only return FinalResponse
             return FinalResponse
 
-        # Build Union: FinalResponse | Tool1 | Tool2 | ...
-        # Use reduce to construct Union dynamically
-        ResponseModel = reduce(lambda acc, schema: acc | schema, tool_schemas, FinalResponse)
+        # Build Union using typing.Union (not | operator) for Instructor compatibility
+        # Use reduce with typing.Union instead of | operator
+        ResponseModel = reduce(lambda acc, schema: Union[acc, schema], tool_schemas, FinalResponse)
 
         return ResponseModel
 
