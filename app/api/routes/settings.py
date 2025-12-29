@@ -7,7 +7,7 @@ Provides endpoints for listing, updating, and revealing plugin settings.
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.core.auth import verify_admin
 from app.core.logger import logger
@@ -198,6 +198,37 @@ async def update_plugin_settings(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Field '{field_name}' is locked by environment variable and cannot be updated",
             )
+
+    # Get current settings to merge with new values
+    settings_model = tool.settings_model
+    current_settings, _, _ = await settings_manager.get_plugin_settings(
+        plugin_slug_upper, settings_model
+    )
+
+    # Convert current settings to dict for merging
+    current_values: dict[str, Any] = {}
+    if current_settings:
+        # Convert Pydantic model to dict, handling SecretStr fields
+        for field_name in settings_model.model_fields:
+            if hasattr(current_settings, field_name):
+                value = getattr(current_settings, field_name)
+                # Handle SecretStr - get actual value for validation
+                if hasattr(value, "get_secret_value"):
+                    current_values[field_name] = value.get_secret_value()
+                else:
+                    current_values[field_name] = value
+
+    # Merge current values with new request settings
+    test_settings = {**current_values, **request.settings}
+
+    # Validate the merged settings before saving
+    try:
+        settings_model(**test_settings)
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid settings: {e.errors()}",
+        ) from e
 
     # Save each setting to database
     for key, value in request.settings.items():
