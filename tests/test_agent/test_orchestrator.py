@@ -64,10 +64,8 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
         server_info={},
     )
     orchestrator.loader.create_plugin_context.return_value = mock_plugin_context
-    # Mock plugin settings (BaseModel instance)
-    from pydantic import BaseModel
-
-    orchestrator.loader._plugin_settings = {"test_tool": BaseModel()}
+    # Mock plugin settings (None for tools without settings)
+    orchestrator.loader._plugin_settings = {"test_tool": None}
 
     # First call: tool input schema, Second call: final response
     tool_input = TestToolInput(param="value")
@@ -84,7 +82,8 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
         assert len(args) == 2
         assert isinstance(args[0], PluginContext)  # First arg is PluginContext
         assert args[0] is mock_plugin_context  # Verify it's our mocked context
-        assert isinstance(args[1], BaseModel)  # Second arg is settings (BaseModel)
+        # Second arg is settings (BaseModel | None)
+        assert args[1] is None or isinstance(args[1], BaseModel)
         assert kwargs == {"param": "value"}
 
 

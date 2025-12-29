@@ -29,8 +29,8 @@ class PluginLoader:
         self._schema_to_tool: dict[type[BaseModel], Tool] = {}
         # Context providers: context_key -> provider instance
         self.context_providers: dict[str, ContextProvider] = {}
-        # Plugin settings: tool name -> validated BaseModel instance
-        self._plugin_settings: dict[str, BaseModel] = {}
+        # Plugin settings: tool name -> validated BaseModel instance (or None if no settings)
+        self._plugin_settings: dict[str, BaseModel | None] = {}
         # Plugin config errors: tool name -> agent-friendly error message
         self._plugin_config_errors: dict[str, str] = {}
 
@@ -61,7 +61,7 @@ class PluginLoader:
         slug = re.sub(r"_+", "_", slug).strip("_")
         return slug
 
-    def _load_plugin_settings(self, plugin_instance: Tool) -> BaseModel:
+    def _load_plugin_settings(self, plugin_instance: Tool) -> BaseModel | None:
         """
         Load and validate plugin settings from namespaced environment variables.
 
@@ -74,11 +74,11 @@ class PluginLoader:
             plugin_instance: Tool instance with optional settings_model attribute
 
         Returns:
-            Validated BaseModel instance, or empty BaseModel() if no model/validation fails (Null Object Pattern)
+            Validated BaseModel instance, or None if no model/validation fails
         """
-        # Null Object Pattern: if no settings_model, return empty BaseModel
+        # Return None if no settings_model (explicit optional)
         if not hasattr(plugin_instance, "settings_model") or plugin_instance.settings_model is None:
-            return BaseModel()
+            return None
 
         settings_model = plugin_instance.settings_model
 
@@ -151,8 +151,8 @@ class PluginLoader:
             )
             # Store error for agent visibility
             self._plugin_config_errors[plugin_instance.name] = error_msg
-            # Return empty BaseModel (Null Object Pattern)
-            return BaseModel()
+            # Return None if validation fails (tool will receive None in is_available/execute)
+            return None
 
     def create_plugin_context(self) -> PluginContext:
         """
@@ -205,7 +205,7 @@ class PluginLoader:
 
         for tool in discovered_tools:
             # Retrieve settings loaded in Phase 1
-            settings = self._plugin_settings.get(tool.name, BaseModel())
+            settings = self._plugin_settings.get(tool.name, None)
 
             # Check availability with complete context (prevents circularity)
             # Protocol specifies sync is_available(), but handle gracefully if async
@@ -341,7 +341,7 @@ class PluginLoader:
             PluginStatus model with all tool metadata and availability status
         """
         # Retrieve settings loaded in Phase 1
-        settings = self._plugin_settings.get(tool.name, BaseModel())
+        settings = self._plugin_settings.get(tool.name, None)
         plugin_context = self.create_plugin_context()
 
         # 1. Resolve the dynamic boolean (Handle sync/async)

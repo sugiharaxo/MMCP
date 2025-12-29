@@ -67,7 +67,7 @@ class Tool(Protocol):
         """
         Optional Pydantic BaseModel defining this tool's configuration requirements.
 
-        If None, the tool has no configuration requirements (Null Object Pattern).
+        If None, the tool has no configuration requirements. The settings parameter will be None in is_available() and execute().
         The loader will discover and validate settings from namespaced environment variables
         using the pattern: MMCP_PLUGIN_{SLUG}_{FIELD_NAME}.
 
@@ -82,7 +82,7 @@ class Tool(Protocol):
         """
         ...
 
-    def is_available(self, settings: BaseModel, context: PluginContext) -> bool:
+    def is_available(self, settings: BaseModel | None, context: PluginContext) -> bool:
         """
         Check if this tool is available given its settings and system context.
 
@@ -90,7 +90,7 @@ class Tool(Protocol):
         Can check both private settings (e.g., API keys) and global context (e.g., other tools).
 
         Args:
-            settings: Validated settings instance (BaseModel) for this tool
+            settings: Validated settings instance (BaseModel) for this tool, or None if no settings_model defined
             context: Complete PluginContext with access to all system state
 
         Returns:
@@ -98,7 +98,9 @@ class Tool(Protocol):
         """
         ...
 
-    async def execute(self, context: PluginContext, settings: BaseModel, **kwargs: Any) -> Any:
+    async def execute(
+        self, context: PluginContext, settings: BaseModel | None, **kwargs: Any
+    ) -> Any:
         """
         The actual logic.
 
@@ -106,6 +108,7 @@ class Tool(Protocol):
 
         Args:
             context: PluginContext with safe access to system state
+            settings: Validated settings instance (BaseModel) for this tool, or None if no settings_model defined
             **kwargs: valid data matching input_schema.
 
         Returns:

@@ -349,7 +349,7 @@ Use tools when you need specific information or actions. When you have enough in
             plugin_context = self.loader.create_plugin_context()
 
             # Retrieve plugin settings loaded in Phase 1
-            settings = self.loader._plugin_settings.get(tool_name, BaseModel())
+            settings = self.loader._plugin_settings.get(tool_name, None)
 
             # Execute tool with PluginContext, settings, and validated arguments
             result = await asyncio.wait_for(

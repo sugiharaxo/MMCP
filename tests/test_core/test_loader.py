@@ -151,11 +151,10 @@ def test_get_tool_unavailable(plugin_dir: Path):
 @pytest.mark.asyncio
 async def test_get_tool_status_sync(loader: PluginLoader, mock_tool):
     """Test get_tool_status with sync is_available()."""
-    from pydantic import BaseModel
 
     loader.tools["mock_tool"] = mock_tool
-    # Set up plugin settings (loaded in Phase 1)
-    loader._plugin_settings["mock_tool"] = BaseModel()
+    # Set up plugin settings (loaded in Phase 1) - None for tools without settings
+    loader._plugin_settings["mock_tool"] = None
 
     status = await loader.get_tool_status(mock_tool)
 

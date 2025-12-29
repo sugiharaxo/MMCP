@@ -54,16 +54,18 @@ class TMDbLookupTool:
     def input_schema(self) -> type[BaseModel]:
         return TMDbMetadataInput
 
-    def is_available(self, settings: TMDbSettings, context: PluginContext) -> bool:
+    def is_available(self, settings: TMDbSettings | None, context: PluginContext) -> bool:
         """
         Check if TMDb API key is configured.
 
         """
+        if settings is None:
+            return False
         try:
             # Access SecretStr safely - get_secret_value() returns the actual string
             return bool(settings.api_key.get_secret_value())
         except Exception:
-            # If settings validation failed, settings will be empty BaseModel()
+            # If settings validation failed or settings is None
             return False
 
     def get_extra_info(self) -> dict[str, Any]:
@@ -92,7 +94,7 @@ class TMDbLookupTool:
     async def execute(
         self,
         context: PluginContext,
-        settings: TMDbSettings,
+        settings: TMDbSettings | None,
         title: str,
         year: int | None = None,
         type: str = "movie",
@@ -103,6 +105,11 @@ class TMDbLookupTool:
         Uses modern Bearer token authentication (API Read Access Token).
         Settings are validated and injected by the loader.
         """
+        if settings is None:
+            return {
+                "error": "TMDb API key not configured. Set MMCP_PLUGIN_TMDB_LOOKUP_METADATA_API_KEY environment variable."
+            }
+
         # Access SecretStr safely - get_secret_value() returns the actual string
         api_key = settings.api_key.get_secret_value()
 
