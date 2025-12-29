@@ -348,8 +348,13 @@ Use tools when you need specific information or actions. When you have enough in
             # Create PluginContext for tool execution (tools expect PluginContext, not MMCPContext)
             plugin_context = self.loader.create_plugin_context()
 
-            # Execute tool with PluginContext and validated arguments
-            result = await asyncio.wait_for(tool.execute(plugin_context, **args), timeout=30.0)
+            # Retrieve plugin settings loaded in Phase 1
+            settings = self.loader._plugin_settings.get(tool_name, BaseModel())
+
+            # Execute tool with PluginContext, settings, and validated arguments
+            result = await asyncio.wait_for(
+                tool.execute(plugin_context, settings, **args), timeout=30.0
+            )
             return str(result) if result is not None else "Tool executed successfully.", False
 
         except Exception as e:
@@ -535,7 +540,8 @@ Use tools when you need specific information or actions. When you have enough in
 
             # Execute the tool with validated arguments (response is already a Pydantic model)
             tool_name = tool.name
-            tool_args = response.model_dump()
+            # Use mode='json' to ensure SecretStr fields are masked (not stringified as SecretStr('**********'))
+            tool_args = response.model_dump(mode="json")
             self._emit_status(
                 f"[Step {step + 1}] Action: Call tool '{tool_name}' with args {tool_args}",
                 trace_id,

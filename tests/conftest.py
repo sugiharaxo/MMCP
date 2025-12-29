@@ -37,7 +37,15 @@ def mock_tool():
     class MockInput(BaseModel):
         test_param: str = Field(..., description="Test parameter")
 
+    class MockSettings(BaseModel):
+        """Mock settings model (optional - demonstrates Null Object Pattern)."""
+
+        api_key: str = "test_key"
+
     class MockTool:
+        # Optional settings_model (Null Object Pattern if None)
+        settings_model = MockSettings
+
         @property
         def name(self) -> str:
             return "mock_tool"
@@ -54,10 +62,12 @@ def mock_tool():
         def input_schema(self) -> type[BaseModel]:
             return MockInput
 
-        def is_available(self) -> bool:
+        def is_available(self, _settings: BaseModel, _context) -> bool:
+            """New signature: receives settings and context."""
             return True
 
-        async def execute(self, _, test_param: str) -> dict:
+        async def execute(self, _context, _settings: BaseModel, test_param: str) -> dict:
+            """New signature: receives context, settings, then kwargs."""
             return {"result": f"Processed: {test_param}"}
 
     return MockTool()

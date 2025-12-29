@@ -7,7 +7,7 @@ and provides typed configuration for plugins and the agent.
 
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -132,6 +132,19 @@ class Settings(BaseSettings):
         self.plugin_dir = self.plugin_dir.resolve()
         self.download_dir = self.download_dir.resolve()
         self.cache_dir = self.cache_dir.resolve()
+
+
+class CoreSettings(BaseModel):
+    """
+    Core settings shared across all plugins.
+
+    Extracted from Settings for type-safe plugin access.
+    Plugins receive this via PluginContext.config instead of a dict.
+    """
+
+    root_dir: Path = Field(description="Root directory for file operations")
+    download_dir: Path = Field(description="Directory for downloaded media files")
+    cache_dir: Path = Field(description="Directory for cache files")
 
 
 # Global settings instance
