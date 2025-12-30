@@ -25,7 +25,7 @@ class Tool(abc.ABC):
         self.settings = settings
         self.context = context
         self.plugin_name = plugin_name  # Store plugin name for settings lookup
-        self.logger = logging.getLogger(f"mmcp.{plugin_name}.{self.name}")
+        self.logger = logging.getLogger(f"mmcp.{plugin_name}.{type(self).name}")
 
     def is_available(self, _settings: Settings | None, _context: Any) -> bool:
         """Check if tool is available. Override in subclasses."""
