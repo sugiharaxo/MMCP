@@ -12,6 +12,8 @@ If you want to contribute, keep in mind our core philosophies:
 
 If you want to build with an AI, inject [these](llm-instructions.md) instructions
 
+[Creating a plugin](creating-a-plugin.md)
+
 ## Stuff to do
 
 - Make it actually useful
