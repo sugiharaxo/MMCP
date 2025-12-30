@@ -28,11 +28,23 @@ class Tool(abc.ABC):
         Validates required class metadata (name, description, input_schema) at class
         definition time, ensuring tools are structurally correct before they enter
         the plugin registry. Raises TypeError if validation fails.
+
+        Convention over Configuration: If a nested class named 'Input' exists and
+        input_schema is not explicitly set, automatically assign it.
         """
         super().__init_subclass__(**kwargs)
         # Skip validation for the abstract base itself
         if cls.__name__ == "Tool":
             return
+
+        # Convention over Configuration: Auto-discover nested 'Input' class
+        if (
+            (not hasattr(cls, "input_schema") or getattr(cls, "input_schema", None) is None)
+            and hasattr(cls, "Input")
+            and isinstance(cls.Input, type)
+            and issubclass(cls.Input, Settings)
+        ):
+            cls.input_schema = cls.Input
 
         # Simple, fast validation at definition time
         errors = []
@@ -84,7 +96,7 @@ class ContextProvider(abc.ABC):
         """
         super().__init_subclass__(**kwargs)
         # Skip validation for the abstract base itself
-        if cls.__name__ == "Provider":
+        if cls.__name__ == "ContextProvider":
             return
 
         # Simple, fast validation at definition time
