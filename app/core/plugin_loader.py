@@ -204,26 +204,18 @@ class PluginLoader:
                     and obj.__module__ == module.__name__
                     and not inspect.isabstract(obj)
                 ):
+                    # Validation happens at definition time via __init_subclass__
+                    # If validation failed, the import would have raised TypeError
                     instance = obj()  # Instantiate the Plugin class
-                    required = ["name", "version"]
-                    missing = [
-                        attr
-                        for attr in required
-                        if not hasattr(instance, attr) or getattr(instance, attr, None) is None
-                    ]
-
-                    if missing:
-                        logger.error(
-                            f"Plugin in {module_name} is missing required metadata: {missing}. "
-                            f"Skipping plugin."
-                        )
-                        return None
-
                     return instance
 
             logger.debug(f"No Plugin subclass found in {module_name}")
             return None
 
+        except TypeError as e:
+            # Catch definition-time validation errors from __init_subclass__
+            logger.error(f"[PluginLoader] Definition Error in {module_name}: {e}")
+            return None
         except Exception as e:
             # Graceful failure: Log the error but keep the server running
             logger.error(f"Failed to load plugin '{module_name}': {e}")
