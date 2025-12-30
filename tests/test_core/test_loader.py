@@ -211,3 +211,216 @@ async def test_get_plugin_statuses(loader: PluginLoader, mock_tool):
     assert "mock_tool" in statuses
     assert statuses["mock_tool"].service_name == "mock_tool"
     assert statuses["mock_tool"].is_available is True
+
+
+@pytest.mark.asyncio
+async def test_multiple_loaders_no_conflicts(tmp_path):
+    """Test that multiple PluginLoader instances don't interfere with each other."""
+    import sys
+
+    # Create two separate plugin directories
+    plugin_dir1 = tmp_path / "plugins1"
+    plugin_dir2 = tmp_path / "plugins2"
+    plugin_dir1.mkdir()
+    plugin_dir2.mkdir()
+
+    # Create different plugins in each directory
+    plugin1_file = plugin_dir1 / "plugin1.py"
+    plugin1_file.write_text("""
+from pydantic import BaseModel
+from app.api.base import Plugin, Tool
+
+class Tool1Input(BaseModel):
+    pass
+
+class Plugin1(Plugin):
+    name = "plugin1"
+    version = "1.0.0"
+    settings_model = None
+
+    class Tool1(Tool):
+        name = "tool1"
+        description = "Tool from plugin1"
+        input_schema = Tool1Input
+        version = "1.0.0"
+
+        def is_available(self, settings=None, runtime=None):
+            return True
+
+        async def execute(self):
+            return {"source": "plugin1"}
+""")
+
+    plugin2_file = plugin_dir2 / "plugin2.py"
+    plugin2_file.write_text("""
+from pydantic import BaseModel
+from app.api.base import Plugin, Tool
+
+class Tool2Input(BaseModel):
+    pass
+
+class Plugin2(Plugin):
+    name = "plugin2"
+    version = "1.0.0"
+    settings_model = None
+
+    class Tool2(Tool):
+        name = "tool2"
+        description = "Tool from plugin2"
+        input_schema = Tool2Input
+        version = "1.0.0"
+
+        def is_available(self, settings=None, runtime=None):
+            return True
+
+        async def execute(self):
+            return {"source": "plugin2"}
+""")
+
+    # Create and load multiple loaders
+    initial_path = sys.path.copy()
+    loader1 = PluginLoader(plugin_dir1)
+    loader2 = PluginLoader(plugin_dir2)
+
+    await loader1.load_plugins()
+    await loader2.load_plugins()
+
+    # Verify sys.path is clean after multiple loaders
+    assert sys.path == initial_path, f"sys.path was polluted: {set(sys.path) - set(initial_path)}"
+
+    # Verify isolation - each loader only has its own plugins
+    assert "plugin1" in loader1.plugins
+    assert "tool1" in loader1.tools
+    assert "plugin2" not in loader1.plugins
+    assert "tool2" not in loader1.tools
+
+    assert "plugin2" in loader2.plugins
+    assert "tool2" in loader2.tools
+    assert "plugin1" not in loader2.plugins
+    assert "tool1" not in loader2.tools
+
+
+@pytest.mark.asyncio
+async def test_exception_handling_cleans_sys_path(tmp_path):
+    """Test that plugin load failures don't leave sys.path polluted."""
+    import sys
+
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+
+    # Create a plugin with syntax error
+    bad_plugin_file = plugin_dir / "bad_plugin.py"
+    bad_plugin_file.write_text("""
+from app.api.base import Plugin, Tool
+
+class BadPlugin(Plugin):
+    name = "bad_plugin"
+    version = "1.0.0"
+    settings_model = None
+
+    # Syntax error - missing closing paren
+    def broken_method(self
+        return "incomplete syntax"
+""")
+
+    # Create a good plugin
+    good_plugin_file = plugin_dir / "good_plugin.py"
+    good_plugin_file.write_text("""
+from pydantic import BaseModel
+from app.api.base import Plugin, Tool
+
+class GoodToolInput(BaseModel):
+    pass
+
+class GoodPlugin(Plugin):
+    name = "good_plugin"
+    version = "1.0.0"
+    settings_model = None
+
+    class GoodTool(Tool):
+        name = "good_tool"
+        description = "Good tool"
+        input_schema = GoodToolInput
+        version = "1.0.0"
+
+        def is_available(self, settings=None, runtime=None):
+            return True
+
+        async def execute(self):
+            return {"status": "good"}
+""")
+
+    # Record sys.path before loading
+    initial_path = set(sys.path)
+
+    loader = PluginLoader(plugin_dir)
+    await loader.load_plugins()
+
+    # Verify sys.path is clean after loading (even with failures)
+    final_path = set(sys.path)
+    assert initial_path == final_path, f"sys.path was polluted: {final_path - initial_path}"
+
+    # Verify the good plugin still loaded despite the bad one
+    assert "good_plugin" in loader.plugins
+    assert "good_tool" in loader.tools
+
+    # Verify the bad plugin didn't load
+    assert "bad_plugin" not in loader.plugins
+
+
+@pytest.mark.asyncio
+async def test_plugin_with_local_imports(tmp_path):
+    """Test that plugins can import local helper modules."""
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+
+    # Create a helper module
+    helper_file = plugin_dir / "test_helper.py"
+    helper_file.write_text("""
+def get_helper_data():
+    return "helper_data"
+
+HELPER_CONSTANT = "constant_value"
+""")
+
+    # Create a plugin that imports the helper
+    plugin_file = plugin_dir / "plugin_with_helper.py"
+    plugin_file.write_text("""
+from pydantic import BaseModel
+from app.api.base import Plugin, Tool
+from test_helper import get_helper_data, HELPER_CONSTANT
+
+class HelperToolInput(BaseModel):
+    pass
+
+class HelperPlugin(Plugin):
+    name = "helper_plugin"
+    version = "1.0.0"
+    settings_model = None
+
+    class HelperTool(Tool):
+        name = "helper_tool"
+        description = "Tool that uses helper module"
+        input_schema = HelperToolInput
+        version = "1.0.0"
+
+        def is_available(self, settings=None, runtime=None):
+            return True
+
+        async def execute(self):
+            return {
+                "data": get_helper_data(),
+                "constant": HELPER_CONSTANT
+            }
+""")
+
+    loader = PluginLoader(plugin_dir)
+    await loader.load_plugins()
+
+    # Verify the plugin was loaded and can access helper
+    assert "helper_plugin" in loader.plugins
+    assert len(loader.tools) == 1
+
+    tool = loader.tools["helper_tool"]
+    result = await tool.execute()
+    assert result == {"data": "helper_data", "constant": "constant_value"}

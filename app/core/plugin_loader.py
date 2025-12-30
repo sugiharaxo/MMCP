@@ -1,8 +1,10 @@
 import ast
+import contextlib
 import importlib.util
 import inspect
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -23,13 +25,12 @@ class PluginLoader:
     Responsible for discovering and instantiating tools from the 'plugins' directory.
     """
 
+    # Class-level lock for thread-safe sys.path modifications
+    _sys_path_lock = threading.RLock()  # Reentrant lock for nested contexts
+
     def __init__(self, plugin_dir: Path, settings_manager: SettingsManager | None = None):
         self.plugin_dir = plugin_dir
         self.settings_manager = settings_manager or SettingsManager()
-        # Add the plugin directory to sys.path so plugins can perform
-        # local imports (e.g., 'import tmdb_api') within their folders.
-        if str(plugin_dir) not in sys.path:
-            sys.path.append(str(plugin_dir))
         # Plugin registry: plugin name -> Plugin instance
         self.plugins: dict[str, Plugin] = {}
         self.tools: dict[str, Tool] = {}
@@ -45,6 +46,34 @@ class PluginLoader:
         self._plugin_config_errors: dict[str, str] = {}
         # Locked fields per plugin: plugin name -> set of locked field names
         self._locked_fields: dict[str, set[str]] = {}
+
+    @contextlib.contextmanager
+    def _plugin_import_context(self):
+        """
+        Thread-safe context manager for temporary sys.path modification.
+
+        Uses RLock to allow nested contexts (e.g., if a plugin imports another plugin).
+        Ensures plugins can import local modules during discovery without
+        permanently polluting global sys.path state.
+
+        Note: While sys.path is cleaned up after use, imported modules remain
+        cached in sys.modules for the application lifetime. This is fine for
+        normal operation but prevents hot-reloading of plugins without
+        additional cleanup of sys.modules entries.
+        """
+        plugin_path = str(self.plugin_dir)
+
+        with self._sys_path_lock:
+            added = False
+            try:
+                if plugin_path not in sys.path:
+                    sys.path.insert(0, plugin_path)  # Higher priority
+                    added = True
+                yield
+            finally:
+                # Thread-safe cleanup - only remove if we added it
+                if added and plugin_path in sys.path:
+                    sys.path.remove(plugin_path)
 
     @staticmethod
     def _slugify_plugin_name(name: str) -> str:
@@ -128,41 +157,46 @@ class PluginLoader:
         """
         discovered_plugins: list[type[Plugin]] = []
 
-        # 1. Recursively find all .py files
-        for py_file in self.plugin_dir.rglob("*.py"):
-            # 2. Skip private files and standard boilerplate
-            if py_file.name.startswith("_") or py_file.name == "__init__.py":
-                continue
+        # Use context manager to scope sys.path modification
+        with self._plugin_import_context():
+            # 1. Recursively find all .py files
+            for py_file in self.plugin_dir.rglob("*.py"):
+                # 2. Skip private files and standard boilerplate
+                if py_file.name.startswith("_") or py_file.name == "__init__.py":
+                    continue
 
-            # 3. Use AST to filter out helper files
-            if not self._is_plugin_file(py_file):
-                continue
+                # 3. Use AST to filter out helper files
+                if not self._is_plugin_file(py_file):
+                    continue
 
-            # 4. Import the file as a module
-            module_name = self._get_module_name(py_file)
-            try:
-                spec = importlib.util.spec_from_file_location(module_name, py_file)
-                if spec is not None and spec.loader is not None:
-                    module = importlib.util.module_from_spec(spec)
-                    sys.modules[module_name] = module
-                    spec.loader.exec_module(module)
+                # 4. Import the file as a module
+                module_name = self._get_module_name(py_file)
+                try:
+                    spec = importlib.util.spec_from_file_location(module_name, py_file)
+                    if spec is not None and spec.loader is not None:
+                        module = importlib.util.module_from_spec(spec)
+                        # Note: This caches the module in sys.modules permanently.
+                        # Good for performance, but prevents hot-reloading without
+                        # explicit sys.modules cleanup.
+                        sys.modules[module_name] = module
+                        spec.loader.exec_module(module)
 
-                    # 5. Extract the Plugin class(es)
-                    for attr_name in dir(module):
-                        attr = getattr(module, attr_name)
-                        if (
-                            isinstance(attr, type)
-                            and issubclass(attr, Plugin)
-                            and attr is not Plugin
-                            and not inspect.isabstract(attr)
-                        ):
-                            discovered_plugins.append(attr)
-                            logger.info(
-                                f"Discovered Plugin: {attr.name} v{attr.version} ({module_name})"
-                            )
+                        # 5. Extract the Plugin class(es)
+                        for attr_name in dir(module):
+                            attr = getattr(module, attr_name)
+                            if (
+                                isinstance(attr, type)
+                                and issubclass(attr, Plugin)
+                                and attr is not Plugin
+                                and not inspect.isabstract(attr)
+                            ):
+                                discovered_plugins.append(attr)
+                                logger.info(
+                                    f"Discovered Plugin: {attr.name} v{attr.version} ({module_name})"
+                                )
 
-            except Exception as e:
-                logger.error(f"Failed to load plugin module {module_name}: {e}")
+                except Exception as e:
+                    logger.error(f"Failed to load plugin module {module_name}: {e}")
 
         return discovered_plugins
 
