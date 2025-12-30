@@ -18,7 +18,7 @@ def _get_project_root() -> Path:
 
 def _get_plugin_dir() -> Path:
     """Get the default plugin directory."""
-    return Path(__file__).parent.parent / "plugins"
+    return _get_project_root() / "plugins"
 
 
 def _get_download_dir() -> Path:

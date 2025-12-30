@@ -1,7 +1,8 @@
-import importlib
+import ast
+import importlib.util
 import inspect
-import pkgutil
 import re
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +26,10 @@ class PluginLoader:
     def __init__(self, plugin_dir: Path, settings_manager: SettingsManager | None = None):
         self.plugin_dir = plugin_dir
         self.settings_manager = settings_manager or SettingsManager()
+        # Add the plugin directory to sys.path so plugins can perform
+        # local imports (e.g., 'import tmdb_api') within their folders.
+        if str(plugin_dir) not in sys.path:
+            sys.path.append(str(plugin_dir))
         # Plugin registry: plugin name -> Plugin instance
         self.plugins: dict[str, Plugin] = {}
         self.tools: dict[str, Tool] = {}
@@ -91,6 +96,76 @@ class PluginLoader:
             system=system_info,
         )
 
+    def _get_module_name(self, file_path: Path) -> str:
+        """Converts a file path to a unique dot-notated module name."""
+        # Get relative path from project root (plugin_dir.parent)
+        relative_path = file_path.relative_to(self.plugin_dir.parent)
+        # Result: "plugins.metadata.tmdb" or "plugins.foundation"
+        return ".".join(relative_path.with_suffix("").parts)
+
+    def _is_plugin_file(self, file_path: Path) -> bool:
+        """AST scan: Returns True if the file defines a class inheriting from 'Plugin'."""
+        try:
+            tree = ast.parse(file_path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                # We look for the literal name "Plugin" in the bases
+                if isinstance(node, ast.ClassDef) and any(
+                    isinstance(base, ast.Name) and base.id == "Plugin" for base in node.bases
+                ):
+                    return True
+        except SyntaxError:
+            logger.warning(f"Skipping plugin {file_path.name}: Syntax Error in file.")
+        except Exception as e:
+            logger.error(f"Error scanning {file_path}: {e}")
+        return False
+
+    def _discover_plugins(self) -> list[type[Plugin]]:
+        """
+        Phase 1: Discover all Plugin classes using AST scanning.
+
+        Returns:
+            List of Plugin class types (not instances yet)
+        """
+        discovered_plugins: list[type[Plugin]] = []
+
+        # 1. Recursively find all .py files
+        for py_file in self.plugin_dir.rglob("*.py"):
+            # 2. Skip private files and standard boilerplate
+            if py_file.name.startswith("_") or py_file.name == "__init__.py":
+                continue
+
+            # 3. Use AST to filter out helper files
+            if not self._is_plugin_file(py_file):
+                continue
+
+            # 4. Import the file as a module
+            module_name = self._get_module_name(py_file)
+            try:
+                spec = importlib.util.spec_from_file_location(module_name, py_file)
+                if spec is not None and spec.loader is not None:
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules[module_name] = module
+                    spec.loader.exec_module(module)
+
+                    # 5. Extract the Plugin class(es)
+                    for attr_name in dir(module):
+                        attr = getattr(module, attr_name)
+                        if (
+                            isinstance(attr, type)
+                            and issubclass(attr, Plugin)
+                            and attr is not Plugin
+                            and not inspect.isabstract(attr)
+                        ):
+                            discovered_plugins.append(attr)
+                            logger.info(
+                                f"Discovered Plugin: {attr.name} v{attr.version} ({module_name})"
+                            )
+
+            except Exception as e:
+                logger.error(f"Failed to load plugin module {module_name}: {e}")
+
+        return discovered_plugins
+
     async def load_plugins(self):
         """
         Scans the plugin directory and loads all Plugin subclasses.
@@ -108,12 +183,19 @@ class PluginLoader:
             self.plugin_dir.mkdir(parents=True, exist_ok=True)
 
         # Phase 1: Discovery and Config Validation (No Context)
+        discovered_plugin_classes = self._discover_plugins()
         discovered_plugins: list[Plugin] = []
-        for module_info in pkgutil.iter_modules([str(self.plugin_dir)]):
-            if module_info.ispkg:
-                plugin = await self._load_single_plugin(module_info.name)
-                if plugin:
-                    discovered_plugins.append(plugin)
+        for plugin_class in discovered_plugin_classes:
+            try:
+                # Validation happens at definition time via __init_subclass__
+                # If validation failed, the import would have raised TypeError
+                instance = plugin_class()  # Instantiate the Plugin class
+                discovered_plugins.append(instance)
+            except TypeError as e:
+                # Catch definition-time validation errors from __init_subclass__
+                logger.error(f"[PluginLoader] Definition Error in {plugin_class.__name__}: {e}")
+            except Exception as e:
+                logger.error(f"Failed to instantiate plugin {plugin_class.__name__}: {e}")
 
         # Phase 2: Functional Availability Check (With Complete Context)
         # Create complete PluginRuntime after all plugins are discovered
@@ -181,45 +263,6 @@ class PluginLoader:
 
                 self.context_providers[provider.context_key] = provider
                 logger.info(f"Loaded Context Provider: {provider.context_key}")
-
-    async def _load_single_plugin(self, module_name: str) -> Plugin | None:
-        """
-        Phase 1: Discover Plugin subclass, instantiate it.
-
-        Returns:
-            Plugin instance if found, None otherwise
-        """
-        try:
-            full_module_name = f"app.plugins.{module_name}"
-            module = importlib.import_module(full_module_name)
-
-            for _, obj in inspect.getmembers(module, inspect.isclass):
-                # 1. Must inherit from Plugin
-                # 2. Must not BE the Plugin base class
-                # 3. Must be defined in the plugin module/package (including submodules)
-                # 4. Must not be abstract (only concrete implementations become active plugins)
-                if (
-                    issubclass(obj, Plugin)
-                    and obj is not Plugin
-                    and obj.__module__.startswith(module.__name__)
-                    and not inspect.isabstract(obj)
-                ):
-                    # Validation happens at definition time via __init_subclass__
-                    # If validation failed, the import would have raised TypeError
-                    instance = obj()  # Instantiate the Plugin class
-                    return instance
-
-            logger.debug(f"No Plugin subclass found in {module_name}")
-            return None
-
-        except TypeError as e:
-            # Catch definition-time validation errors from __init_subclass__
-            logger.error(f"[PluginLoader] Definition Error in {module_name}: {e}")
-            return None
-        except Exception as e:
-            # Graceful failure: Log the error but keep the server running
-            logger.error(f"Failed to load plugin '{module_name}': {e}")
-            return None
 
     async def _load_plugin_settings_for_plugin(
         self, plugin_instance: Plugin

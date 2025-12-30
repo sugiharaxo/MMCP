@@ -23,50 +23,37 @@ async def test_load_plugins_empty_directory(loader: PluginLoader):
 
 @pytest.mark.asyncio
 async def test_load_plugins_with_valid_plugin(plugin_dir: Path):
-    """Test loading a valid plugin."""
-    from unittest.mock import MagicMock, patch
+    """Test loading a valid plugin from a Python file."""
 
-    from pydantic import BaseModel
+    # Create a plugin file in the test directory
+    plugin_content = """
+from pydantic import BaseModel
+from app.api.base import Plugin, Tool
 
-    from app.api.base import Plugin, Tool
+class TestPlugin(Plugin):
+    name = "test_plugin"
+    version = "1.0.0"
+    settings_model = None
 
-    # Create a proper Plugin class with nested Tool (matches actual plugin structure)
-    class TestPlugin(Plugin):
-        name = "test_plugin"
+    class TestTool(Tool):
+        name = "test_tool"
+        description = "A test tool"
         version = "1.0.0"
-        settings_model = None
+        input_schema = BaseModel
 
-        class TestTool(Tool):
-            name = "test_tool"
-            description = "A test tool"
-            version = "1.0.0"
-            input_schema = BaseModel
-            settings_model = None
+        def is_available(self, settings, context) -> bool:
+            return True
 
-            def is_available(self, _settings, _context) -> bool:
-                return True
+        async def execute(self, **kwargs) -> dict:
+            return {"result": "test"}
+"""
 
-            async def execute(self, **_kwargs) -> dict:
-                return {"result": "test"}
-
-    # Create a mock module with the TestPlugin class
-    import types
-
-    # Module name must match what loader expects: app.plugins.{module_name}
-    mock_module = types.ModuleType("app.plugins.test_plugin")
-    # Set __module__ to match the mock module so plugin loader can discover it
-    TestPlugin.__module__ = "app.plugins.test_plugin"
-    mock_module.TestPlugin = TestPlugin
+    # Create the plugin file
+    plugin_file = plugin_dir / "test_plugin.py"
+    plugin_file.write_text(plugin_content)
 
     loader = PluginLoader(plugin_dir)
-
-    # Mock the import_module and pkgutil to return our test plugin
-    with (
-        patch("app.core.plugin_loader.importlib.import_module", return_value=mock_module),
-        patch("app.core.plugin_loader.pkgutil.iter_modules") as mock_iter,
-    ):
-        mock_iter.return_value = [MagicMock(name="test_plugin", ispkg=True)]
-        await loader.load_plugins()
+    await loader.load_plugins()
 
     # Check that tool was loaded
     assert "test_tool" in loader.list_tools()
@@ -100,49 +87,36 @@ def test_get_tool(loader: PluginLoader, mock_tool):
 @pytest.mark.asyncio
 async def test_get_tool_unavailable(plugin_dir: Path):
     """Test that unavailable tools go to standby_tools instead of being dropped."""
-    from unittest.mock import MagicMock, patch
 
-    from pydantic import BaseModel
+    # Create a plugin file with an unavailable tool
+    plugin_content = """
+from pydantic import BaseModel
+from app.api.base import Plugin, Tool
 
-    from app.api.base import Plugin, Tool
+class UnavailablePlugin(Plugin):
+    name = "unavailable_plugin"
+    version = "1.0.0"
+    settings_model = None
 
-    # Create a proper Plugin class with nested Tool (matches actual plugin structure)
-    class UnavailablePlugin(Plugin):
-        name = "unavailable_plugin"
+    class UnavailableTool(Tool):
+        name = "unavailable_tool"
+        description = "An unavailable tool"
         version = "1.0.0"
-        settings_model = None
+        input_schema = BaseModel
 
-        class UnavailableTool(Tool):
-            name = "unavailable_tool"
-            description = "An unavailable tool"
-            version = "1.0.0"
-            input_schema = BaseModel
-            settings_model = None
+        def is_available(self, settings, context) -> bool:
+            return False  # Tool is not available
 
-            def is_available(self, _settings, _context) -> bool:
-                return False  # Tool is not available
+        async def execute(self, **kwargs) -> dict:
+            return {}
+"""
 
-            async def execute(self, **_kwargs) -> dict:
-                return {}
-
-    # Create a mock module with the UnavailablePlugin class
-    import types
-
-    # Module name must match what loader expects: app.plugins.{module_name}
-    mock_module = types.ModuleType("app.plugins.unavailable_plugin")
-    # Set __module__ to match the mock module so plugin loader can discover it
-    UnavailablePlugin.__module__ = "app.plugins.unavailable_plugin"
-    mock_module.UnavailablePlugin = UnavailablePlugin
+    # Create the plugin file
+    plugin_file = plugin_dir / "unavailable_plugin.py"
+    plugin_file.write_text(plugin_content)
 
     loader = PluginLoader(plugin_dir)
-
-    # Mock the import_module and pkgutil to return our test plugin
-    with (
-        patch("app.core.plugin_loader.importlib.import_module", return_value=mock_module),
-        patch("app.core.plugin_loader.pkgutil.iter_modules") as mock_iter,
-    ):
-        mock_iter.return_value = [MagicMock(name="unavailable_plugin", ispkg=True)]
-        await loader.load_plugins()
+    await loader.load_plugins()
 
     # Tool should be in standby_tools, not active tools
     assert "unavailable_tool" not in loader.list_tools()

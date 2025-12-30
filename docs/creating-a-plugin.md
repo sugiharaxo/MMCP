@@ -2,6 +2,29 @@
 
 Welcome to the MMCP ecosystem. This guide will help you build **Tools** (actions for the agent) and **Context Providers** (state information for the agent).
 
+## 📂 Plugin Structure
+
+MMCP is a **zero-boilerplate** system.
+
+1. Place your plugins in the `/plugins` directory at the project root.
+2. Any `.py` file containing a class that inherits from `Plugin` will be loaded.
+3. Files starting with `_` or files that don't contain a `Plugin` class are ignored (useful for helpers/utilities).
+4. `__init__.py` files are **not required**.
+
+You can organize plugins as single files or in nested folders:
+
+```text
+plugins/
+├── foundation.py    # Simple plugin
+└── metadata/        # Nested category
+    ├── tmdb.py      # Plugin file
+    └── tmdb_api.py  # Helper file (ignored by scanner)
+```
+
+The loader uses **relative pathnames as namespaces** to prevent collisions. A plugin at `plugins/metadata/tmdb.py` becomes `plugins.metadata.tmdb` internally.
+
+---
+
 ## 🌍 The Plugin Environment
 
 When you inherit from `Tool` or `ContextProvider`, your class is automatically equipped with everything it needs to interact with the system. You don't need to import paths or configure loggers; they are available directly on `self`.
@@ -392,8 +415,8 @@ def execute(self, filename: str):
 
 Check out existing implementations:
 
-- `app/plugins/core_metadata/tmdb.py` (A Tool)
-- `app/plugins/core_foundation/providers.py` (Context Provider)
+- `plugins/metadata/tmdb.py` (Tool)
+- `plugins/foundation.py` (Context Provider)
 
 ---
 
