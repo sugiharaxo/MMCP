@@ -196,12 +196,12 @@ class PluginLoader:
             for _, obj in inspect.getmembers(module, inspect.isclass):
                 # 1. Must inherit from Plugin
                 # 2. Must not BE the Plugin base class
-                # 3. Must be defined in the plugin file (not imported)
+                # 3. Must be defined in the plugin module/package (including submodules)
                 # 4. Must not be abstract (only concrete implementations become active plugins)
                 if (
                     issubclass(obj, Plugin)
                     and obj is not Plugin
-                    and obj.__module__ == module.__name__
+                    and obj.__module__.startswith(module.__name__)
                     and not inspect.isabstract(obj)
                 ):
                     # Validation happens at definition time via __init_subclass__
