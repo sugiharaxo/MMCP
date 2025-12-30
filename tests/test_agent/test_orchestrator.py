@@ -54,8 +54,10 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
 
     mock_tool = MagicMock()
     mock_tool.name = "test_tool"
+    mock_tool.plugin_name = "test_plugin"  # Set plugin_name attribute
     mock_tool.execute = AsyncMock(return_value={"result": "Tool executed"})
     orchestrator.loader.get_tool_by_schema.return_value = mock_tool
+    orchestrator.loader.standby_tools = {}  # Ensure tool is not in standby
     # Mock create_plugin_context to return a real PluginContext
     from app.core.config import CoreSettings
 
@@ -64,8 +66,8 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
         server_info={},
     )
     orchestrator.loader.create_plugin_context.return_value = mock_plugin_context
-    # Mock plugin settings (None for tools without settings)
-    orchestrator.loader._plugin_settings = {"test_tool": None}
+    # Mock plugin settings (None for tools without settings) - stored by plugin_name
+    orchestrator.loader._plugin_settings = {"test_plugin": None}
 
     # First call: tool input schema, Second call: final response
     tool_input = TestToolInput(param="value")
@@ -77,13 +79,9 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
         result = await orchestrator.chat("Test message")
 
         assert result == "Done"
-        # Verify tool was called with context, settings, and params
+        # Verify tool was called with kwargs only (context/settings are in self)
         args, kwargs = mock_tool.execute.call_args
-        assert len(args) == 2
-        assert isinstance(args[0], PluginContext)  # First arg is PluginContext
-        assert args[0] is mock_plugin_context  # Verify it's our mocked context
-        # Second arg is settings (BaseModel | None)
-        assert args[1] is None or isinstance(args[1], BaseModel)
+        assert len(args) == 0  # No positional args - context/settings are in self
         assert kwargs == {"param": "value"}
 
 

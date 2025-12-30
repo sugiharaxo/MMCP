@@ -67,17 +67,25 @@ class Tool(Protocol):
         """
         Optional Pydantic BaseModel defining this tool's configuration requirements.
 
-        If None, the tool has no configuration requirements. The settings parameter will be None in is_available() and execute().
-        The loader will discover and validate settings from namespaced environment variables
-        using the pattern: MMCP_PLUGIN_{SLUG}_{FIELD_NAME}.
+        **Note:** Settings are defined at the plugin level, not the tool level. All tools
+        within a plugin share the same settings instance. If the parent plugin has a
+        `settings_model`, tools will receive those settings via `self.settings`. If None,
+        the tool has no configuration requirements and the settings parameter will be None
+        in `is_available()` and `execute()`.
+
+        The loader discovers and validates settings from namespaced environment variables
+        using the pattern: `MMCP_PLUGIN_{PLUGIN_SLUG}_{FIELD_NAME}`.
 
         Example:
             class MySettings(BaseModel):
                 api_key: SecretStr
                 language: str = "en-US"
 
-            class MyTool:
-                settings_model = MySettings
+            class MyPlugin(Plugin):
+                settings_model = MySettings  # Define at plugin level
+
+            class MyTool(Tool):
+                # Tools automatically inherit settings from parent plugin
                 ...
         """
         ...

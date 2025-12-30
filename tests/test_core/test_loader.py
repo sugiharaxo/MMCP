@@ -28,37 +28,35 @@ async def test_load_plugins_with_valid_plugin(plugin_dir: Path):
 
     from pydantic import BaseModel
 
-    # Create a proper TestTool class that implements Tool protocol
-    class TestTool:
-        settings_model = None  # No settings required
+    from app.api.base import Plugin, Tool
 
-        @property
-        def name(self) -> str:
-            return "test_tool"
+    # Create a proper Plugin class with nested Tool (matches actual plugin structure)
+    class TestPlugin(Plugin):
+        name = "test_plugin"
+        version = "1.0.0"
+        settings_model = None
 
-        @property
-        def description(self) -> str:
-            return "A test tool"
+        class TestTool(Tool):
+            name = "test_tool"
+            description = "A test tool"
+            version = "1.0.0"
+            input_schema = BaseModel
+            settings_model = None
 
-        @property
-        def version(self) -> str:
-            return "1.0.0"
+            def is_available(self, _settings, _context) -> bool:
+                return True
 
-        @property
-        def input_schema(self):
-            return BaseModel
+            async def execute(self, **_kwargs) -> dict:
+                return {"result": "test"}
 
-        def is_available(self, _settings, _context) -> bool:
-            return True
-
-        async def execute(self, _context, _settings, **_kwargs) -> dict:
-            return {"result": "test"}
-
-    # Create a mock module with the TestTool class
+    # Create a mock module with the TestPlugin class
     import types
 
-    mock_module = types.ModuleType("test_plugin")
-    mock_module.TestTool = TestTool
+    # Module name must match what loader expects: app.plugins.{module_name}
+    mock_module = types.ModuleType("app.plugins.test_plugin")
+    # Set __module__ to match the mock module so plugin loader can discover it
+    TestPlugin.__module__ = "app.plugins.test_plugin"
+    mock_module.TestPlugin = TestPlugin
 
     loader = PluginLoader(plugin_dir)
 
@@ -75,6 +73,7 @@ async def test_load_plugins_with_valid_plugin(plugin_dir: Path):
     tool = loader.get_tool("test_tool")
     assert tool is not None
     assert tool.name == "test_tool"
+    assert tool.plugin_name == "test_plugin"  # Verify plugin_name is set
 
 
 def test_list_tools(loader: PluginLoader, mock_tool):
@@ -105,37 +104,35 @@ async def test_get_tool_unavailable(plugin_dir: Path):
 
     from pydantic import BaseModel
 
-    # Create a proper UnavailableTool class that implements Tool protocol
-    class UnavailableTool:
-        settings_model = None  # No settings required
+    from app.api.base import Plugin, Tool
 
-        @property
-        def name(self) -> str:
-            return "unavailable_tool"
+    # Create a proper Plugin class with nested Tool (matches actual plugin structure)
+    class UnavailablePlugin(Plugin):
+        name = "unavailable_plugin"
+        version = "1.0.0"
+        settings_model = None
 
-        @property
-        def description(self) -> str:
-            return "An unavailable tool"
+        class UnavailableTool(Tool):
+            name = "unavailable_tool"
+            description = "An unavailable tool"
+            version = "1.0.0"
+            input_schema = BaseModel
+            settings_model = None
 
-        @property
-        def version(self) -> str:
-            return "1.0.0"
+            def is_available(self, _settings, _context) -> bool:
+                return False  # Tool is not available
 
-        @property
-        def input_schema(self):
-            return BaseModel
+            async def execute(self, **_kwargs) -> dict:
+                return {}
 
-        def is_available(self, _settings, _context) -> bool:
-            return False  # Tool is not available
-
-        async def execute(self, _context, _settings, **_kwargs) -> dict:
-            return {}
-
-    # Create a mock module with the UnavailableTool class
+    # Create a mock module with the UnavailablePlugin class
     import types
 
-    mock_module = types.ModuleType("test_plugin")
-    mock_module.UnavailableTool = UnavailableTool
+    # Module name must match what loader expects: app.plugins.{module_name}
+    mock_module = types.ModuleType("app.plugins.unavailable_plugin")
+    # Set __module__ to match the mock module so plugin loader can discover it
+    UnavailablePlugin.__module__ = "app.plugins.unavailable_plugin"
+    mock_module.UnavailablePlugin = UnavailablePlugin
 
     loader = PluginLoader(plugin_dir)
 
@@ -153,6 +150,7 @@ async def test_get_tool_unavailable(plugin_dir: Path):
     tool = loader.get_tool("unavailable_tool")  # Should still be retrievable
     assert tool is not None
     assert tool.name == "unavailable_tool"
+    assert tool.plugin_name == "unavailable_plugin"  # Verify plugin_name is set
 
 
 @pytest.mark.asyncio
@@ -161,7 +159,8 @@ async def test_get_tool_status_sync(loader: PluginLoader, mock_tool):
 
     loader.tools["mock_tool"] = mock_tool
     # Set up plugin settings (loaded in Phase 1) - None for tools without settings
-    loader._plugin_settings["mock_tool"] = None
+    # Settings are stored by plugin_name, not tool name
+    loader._plugin_settings[mock_tool.plugin_name] = None
 
     status = await loader.get_tool_status(mock_tool)
 
@@ -214,7 +213,10 @@ async def test_get_tool_status_async():
 
     loader = PluginLoader(Path("/tmp"))
     tool = AsyncTool()
+    tool.plugin_name = "async_plugin"  # Set plugin_name attribute
     loader.tools["async_tool"] = tool
+    # Set up plugin settings by plugin_name
+    loader._plugin_settings["async_plugin"] = None
 
     status = await loader.get_tool_status(tool)
 

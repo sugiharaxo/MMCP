@@ -7,41 +7,51 @@ Provides essential situational awareness including time, platform, and service s
 import platform
 from datetime import datetime
 
-from mmcp import ContextResponse, PluginContext
+from app.api.base import Plugin, Provider
+from app.api.schemas import ContextResponse, PluginContext
 
 
-class IdentityProvider:
+class Foundation(Plugin):
     """
-    Identity Context Provider.
+    Foundation Plugin - Core Context Providers.
 
-    Provides current time and platform information for temporal reasoning.
-    This ensures the agent isn't "time-blind" and can answer questions like
-    "How much time do I have before midnight?" or "What was the date two days ago?"
+    Provides essential situational awareness for the MMCP agent including:
+    - Identity: Current time and platform information
     """
 
-    @property
-    def context_key(self) -> str:
-        return "identity"
+    name = "foundation"
+    version = "1.0.0"
+    settings_model = None  # No settings required
 
-    async def provide_context(self, context: PluginContext) -> ContextResponse:
+    class Identity(Provider):  # Nesting = Auto-discovery (Pattern A)
         """
-        Return current time and platform information.
+        Identity Context Provider.
 
-        Args:
-            context: Safe PluginContext facade with system access.
-
-        Returns:
-            ContextResponse with current timestamp and platform details.
+        Provides current time and platform information for temporal reasoning.
+        This ensures the agent isn't "time-blind" and can answer questions like
+        "How much time do I have before midnight?" or "What was the date two days ago?"
         """
-        now = datetime.now()
 
-        return ContextResponse(
-            data={
-                "current_time": now.strftime("%A, %b %d, %Y %I:%M %p"),
-                "timezone": now.astimezone().tzname(),
-                "host_os": platform.system(),
-                # "host_platform": platform.platform(),
-            },
-            ttl=0,
-            provider_name="IdentityProvider",
-        )
+        context_key = "identity"
+
+        async def provide_context(self, context: PluginContext) -> ContextResponse:
+            """
+            Return current time and platform information.
+
+            Args:
+                context: Safe PluginContext facade with system access.
+
+            Returns:
+                ContextResponse with current timestamp and platform details.
+            """
+            now = datetime.now()
+
+            return ContextResponse(
+                data={
+                    "current_time": now.strftime("%A, %b %d, %Y %I:%M %p"),
+                    "timezone": now.astimezone().tzname(),
+                    "host_os": platform.system(),
+                },
+                ttl=0,
+                provider_name="Identity",
+            )
