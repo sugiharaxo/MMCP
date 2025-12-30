@@ -110,7 +110,9 @@ class PluginLoader:
             for node in ast.walk(tree):
                 # We look for the literal name "Plugin" in the bases
                 if isinstance(node, ast.ClassDef) and any(
-                    isinstance(base, ast.Name) and base.id == "Plugin" for base in node.bases
+                    (isinstance(base, ast.Name) and base.id == "Plugin") or
+                    (isinstance(base, ast.Attribute) and base.attr == "Plugin")
+                    for base in node.bases
                 ):
                     return True
         except SyntaxError:
