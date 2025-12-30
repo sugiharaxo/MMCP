@@ -147,6 +147,7 @@ class PluginLoader:
             # 1. Register Tools (The Plugin has already injected settings/context/logger)
 
             for tool in plugin.get_tools(plugin_settings, plugin_context):
+                # Validation happens in Plugin.get_tools() before instantiation
                 # Check tool availability
                 try:
                     if inspect.iscoroutinefunction(tool.is_available):
@@ -196,12 +197,29 @@ class PluginLoader:
                 # 1. Must inherit from Plugin
                 # 2. Must not BE the Plugin base class
                 # 3. Must be defined in the plugin file (not imported)
+                # 4. Must not be abstract (only concrete implementations become active plugins)
                 if (
                     issubclass(obj, Plugin)
                     and obj is not Plugin
                     and obj.__module__ == module.__name__
+                    and not inspect.isabstract(obj)
                 ):
-                    return obj()  # Instantiate the Plugin class
+                    instance = obj()  # Instantiate the Plugin class
+                    required = ["name", "version"]
+                    missing = [
+                        attr
+                        for attr in required
+                        if not hasattr(instance, attr) or getattr(instance, attr, None) is None
+                    ]
+
+                    if missing:
+                        logger.error(
+                            f"Plugin in {module_name} is missing required metadata: {missing}. "
+                            f"Skipping plugin."
+                        )
+                        return None
+
+                    return instance
 
             logger.debug(f"No Plugin subclass found in {module_name}")
             return None
