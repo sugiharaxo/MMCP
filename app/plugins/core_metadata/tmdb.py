@@ -44,7 +44,6 @@ class TMDb(Plugin):
         description = "Finds movie/TV show metadata (ID, year, overview, poster) using The Movie Database (TMDb) API."
         input_schema = TMDbMetadataInput
         version = "1.0.0"
-        settings_model = TMDbSettings
 
         def is_available(self, settings: TMDbSettings | None, _context: PluginContext) -> bool:
             """Check if TMDb API key is configured."""
