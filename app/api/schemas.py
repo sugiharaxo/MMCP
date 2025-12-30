@@ -51,9 +51,9 @@ class PluginStatus(BaseModel):
     )
 
 
-class PluginContext(BaseModel):
+class PluginRuntime(BaseModel):
     """
-    Safe facade for plugin access to system state.
+    Safe facade for plugin access to system runtime state.
 
     This replaces passing the full PluginLoader to plugins. It provides only
     the subset of functionality that plugins are allowed to use, preventing
@@ -62,9 +62,8 @@ class PluginContext(BaseModel):
     Philosophy: Sandboxed access - plugins get what they need, nothing more.
     """
 
-    # Safe configuration access (read-only subset of settings)
-    # Changed from dict[str, Any] to CoreSettings for type safety
-    config: CoreSettings
+    # Safe paths configuration (read-only subset of settings)
+    paths: CoreSettings
 
     # System information (read-only)
-    server_info: dict[str, Any]
+    system: dict[str, Any]

@@ -50,7 +50,7 @@ async def test_chat_final_response(orchestrator: AgentOrchestrator):
 @pytest.mark.asyncio
 async def test_chat_tool_call(orchestrator: AgentOrchestrator):
     """Test that chat executes tools when LLM requests them."""
-    from mmcp import PluginContext
+    from mmcp import PluginRuntime
 
     mock_tool = MagicMock()
     mock_tool.name = "test_tool"
@@ -58,14 +58,14 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
     mock_tool.execute = AsyncMock(return_value={"result": "Tool executed"})
     orchestrator.loader.get_tool_by_schema.return_value = mock_tool
     orchestrator.loader.standby_tools = {}  # Ensure tool is not in standby
-    # Mock create_plugin_context to return a real PluginContext
+    # Mock create_plugin_runtime to return a real PluginRuntime
     from app.core.config import CoreSettings
 
-    mock_plugin_context = PluginContext(
-        config=CoreSettings(root_dir=Path("/"), download_dir=Path("/"), cache_dir=Path("/")),
-        server_info={},
+    mock_plugin_runtime = PluginRuntime(
+        paths=CoreSettings(root_dir=Path("/"), download_dir=Path("/"), cache_dir=Path("/")),
+        system={},
     )
-    orchestrator.loader.create_plugin_context.return_value = mock_plugin_context
+    orchestrator.loader.create_plugin_runtime.return_value = mock_plugin_runtime
     # Mock plugin settings (None for tools without settings) - stored by plugin_name
     orchestrator.loader._plugin_settings = {"test_plugin": None}
 

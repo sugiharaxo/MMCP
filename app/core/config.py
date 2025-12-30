@@ -155,7 +155,7 @@ class CoreSettings(BaseModel):
     Core settings shared across all plugins.
 
     Extracted from Settings for type-safe plugin access.
-    Plugins receive this via PluginContext.config instead of a dict.
+    Plugins receive this via PluginRuntime.paths, accessible as self.paths in tools.
     """
 
     root_dir: Path = Field(description="Root directory for file operations")

@@ -7,8 +7,8 @@ Provides essential situational awareness including time, platform, and service s
 import platform
 from datetime import datetime
 
-from app.api.base import Plugin, Provider
-from app.api.schemas import ContextResponse, PluginContext
+from app.api.base import ContextProvider, Plugin
+from app.api.schemas import ContextResponse
 
 
 class Foundation(Plugin):
@@ -21,9 +21,9 @@ class Foundation(Plugin):
 
     name = "foundation"
     version = "1.0.0"
-    settings_model = None  # No settings required
+    settings_model = None
 
-    class Identity(Provider):  # Nesting = Auto-discovery (Pattern A)
+    class Identity(ContextProvider):
         """
         Identity Context Provider.
 
@@ -34,12 +34,9 @@ class Foundation(Plugin):
 
         context_key = "identity"
 
-        async def provide_context(self, context: PluginContext) -> ContextResponse:
+        async def provide_context(self) -> ContextResponse:
             """
             Return current time and platform information.
-
-            Args:
-                context: Safe PluginContext facade with system access.
 
             Returns:
                 ContextResponse with current timestamp and platform details.
@@ -51,6 +48,8 @@ class Foundation(Plugin):
                     "current_time": now.strftime("%A, %b %d, %Y %I:%M %p"),
                     "timezone": now.astimezone().tzname(),
                     "host_os": platform.system(),
+                    "mmcp_version": self.system.get("version", "unknown"),
+                    "environment": self.system.get("environment", "unknown"),
                 },
                 ttl=0,
                 provider_name="Identity",
