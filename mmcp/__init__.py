@@ -4,7 +4,7 @@ MMCP - Modular Media Control Plane SDK
 The official SDK for developing plugins for the Modular Media Control Plane.
 
 Example:
-    from mmcp import Plugin, Tool, Provider, PluginContext
+    from mmcp import Plugin, Tool, ContextProvider, PluginRuntime
     from pydantic import BaseModel
 
     class MyInputSchema(BaseModel):
@@ -23,13 +23,13 @@ Example:
                 return {"result": "Hello from my tool!"}
 """
 
-from app.api import ContextResponse, Plugin, PluginContext, PluginStatus, Provider, Tool
+from app.api import ContextProvider, ContextResponse, Plugin, PluginRuntime, PluginStatus, Tool
 
 __all__ = [
     "Plugin",
     "Tool",
-    "Provider",
+    "ContextProvider",
     "ContextResponse",
-    "PluginContext",
+    "PluginRuntime",
     "PluginStatus",
 ]

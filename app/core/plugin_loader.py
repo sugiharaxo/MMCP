@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from app.api.base import Plugin, Provider, Tool
-from app.api.schemas import PluginContext, PluginStatus
+from app.api.base import ContextProvider, Plugin, Tool
+from app.api.schemas import PluginRuntime, PluginStatus
 from app.core.config import CoreSettings, settings
 from app.core.logger import logger
 from app.core.settings_manager import SettingsManager
@@ -33,7 +33,7 @@ class PluginLoader:
         # Reverse mapping: input_schema class -> tool instance
         self._schema_to_tool: dict[type[BaseModel], Tool] = {}
         # Context providers: context_key -> provider instance
-        self.context_providers: dict[str, Provider] = {}
+        self.context_providers: dict[str, ContextProvider] = {}
         # Plugin settings: plugin name -> validated BaseModel instance (or None if no settings)
         self._plugin_settings: dict[str, BaseModel | None] = {}
         # Plugin config errors: plugin name -> agent-friendly error message
@@ -68,27 +68,27 @@ class PluginLoader:
         slug = re.sub(r"_+", "_", slug).strip("_")
         return slug
 
-    def create_plugin_context(self) -> PluginContext:
+    def create_plugin_runtime(self) -> PluginRuntime:
         """
-        Create a safe PluginContext facade for plugins to use.
+        Create a safe PluginRuntime facade for plugins to use.
 
         Returns CoreSettings instance instead of dict for type-safe access.
         """
         # Instantiate CoreSettings from settings instance
-        core_config = CoreSettings(
+        core_paths = CoreSettings(
             root_dir=settings.root_dir,
             download_dir=settings.download_dir,
             cache_dir=settings.cache_dir,
         )
 
-        server_info = {
+        system_info = {
             "version": "0.1.0",
             "environment": "development",
         }
 
-        return PluginContext(
-            config=core_config,
-            server_info=server_info,
+        return PluginRuntime(
+            paths=core_paths,
+            system=system_info,
         )
 
     async def load_plugins(self):
@@ -116,8 +116,8 @@ class PluginLoader:
                     discovered_plugins.append(plugin)
 
         # Phase 2: Functional Availability Check (With Complete Context)
-        # Create complete PluginContext after all plugins are discovered
-        plugin_context = self.create_plugin_context()
+        # Create complete PluginRuntime after all plugins are discovered
+        plugin_runtime = self.create_plugin_runtime()
 
         for plugin in discovered_plugins:
             # Store plugin instance in registry
@@ -133,9 +133,9 @@ class PluginLoader:
             # Check plugin availability
             try:
                 if inspect.iscoroutinefunction(plugin.is_available):
-                    plugin_available = await plugin.is_available(plugin_settings, plugin_context)
+                    plugin_available = await plugin.is_available(plugin_settings, plugin_runtime)
                 else:
-                    plugin_available = plugin.is_available(plugin_settings, plugin_context)
+                    plugin_available = plugin.is_available(plugin_settings, plugin_runtime)
             except Exception as e:
                 logger.warning(f"Error checking availability for plugin {plugin.name}: {e}")
                 plugin_available = False
@@ -146,14 +146,14 @@ class PluginLoader:
 
             # 1. Register Tools (The Plugin has already injected settings/context/logger)
 
-            for tool in plugin.get_tools(plugin_settings, plugin_context):
+            for tool in plugin.get_tools(plugin_settings, plugin_runtime):
                 # Validation happens in Plugin.get_tools() before instantiation
                 # Check tool availability
                 try:
                     if inspect.iscoroutinefunction(tool.is_available):
-                        available = await tool.is_available(tool.settings, plugin_context)
+                        available = await tool.is_available(tool.settings, plugin_runtime)
                     else:
-                        available = tool.is_available(tool.settings, plugin_context)
+                        available = tool.is_available(tool.settings, plugin_runtime)
                 except Exception as e:
                     logger.warning(f"Error checking availability for {tool.name}: {e}")
                     available = False
@@ -170,7 +170,7 @@ class PluginLoader:
                     logger.info(f"Tool {tool.name} on standby (not available{reason})")
 
             # Extract and register providers from this plugin
-            providers = plugin.get_providers(plugin_settings)
+            providers = plugin.get_providers(plugin_settings, plugin_runtime)
             for provider in providers:
                 if provider.context_key in self.context_providers:
                     logger.error(
@@ -337,15 +337,15 @@ class PluginLoader:
         # Retrieve settings by plugin name (all tools in a plugin share the same settings)
         plugin_name = tool.plugin_name
         settings = self._plugin_settings.get(plugin_name, None)
-        plugin_context = self.create_plugin_context()
+        plugin_runtime = self.create_plugin_runtime()
 
         # 1. Resolve the dynamic boolean (Handle sync/async)
         # is_available now receives settings and context
         try:
             if inspect.iscoroutinefunction(tool.is_available):
-                available = await tool.is_available(settings, plugin_context)
+                available = await tool.is_available(settings, plugin_runtime)
             else:
-                available = tool.is_available(settings, plugin_context)
+                available = tool.is_available(settings, plugin_runtime)
         except Exception as e:
             logger.warning(f"Error checking availability for {tool.name}: {e}")
             available = False
@@ -407,13 +407,12 @@ class PluginLoader:
         """
         Gather context from all eligible context providers.
         """
-        context = self.create_plugin_context()
         gathered_context = {}
 
         for provider in self.context_providers.values():
             try:
                 if await provider.is_eligible(query):
-                    response = await provider.provide_context(context)
+                    response = await provider.provide_context()
                     gathered_context[provider.context_key] = response.data
             except Exception as e:
                 logger.warning(f"Failed to gather context from {provider.context_key}: {e}")

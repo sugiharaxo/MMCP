@@ -252,11 +252,11 @@ Use tools when you need specific information or actions. When you have enough in
                 logger.debug(f"Context provider '{provider_key}' is circuit-broken, skipping")
                 return provider_key, None
 
-            # Execute with per-provider timeout using PluginContext facade
+            # Execute with per-provider timeout using PluginRuntime facade
             timeout_seconds = settings.context_per_provider_timeout_ms / 1000.0
-            plugin_context = self.loader.create_plugin_context()
+            plugin_runtime = self.loader.create_plugin_runtime()
             result = await asyncio.wait_for(
-                provider.provide_context(plugin_context), timeout=timeout_seconds
+                provider.provide_context(plugin_runtime), timeout=timeout_seconds
             )
 
             # Extract data from ContextResponse
@@ -371,7 +371,7 @@ Use tools when you need specific information or actions. When you have enough in
         """
         try:
             # Execute tool with validated arguments
-            # Tool already has context and settings injected via __init__ (self.context, self.settings)
+            # Tool already has paths, system, and settings injected via __init__ (self.paths, self.system, self.settings)
             result = await asyncio.wait_for(tool.execute(**args), timeout=30.0)
             return str(result) if result is not None else "Tool executed successfully.", False
 

@@ -4,7 +4,7 @@ from curl_cffi.requests import AsyncSession, RequestsError
 from pydantic import BaseModel, Field, SecretStr
 
 from app.api.base import Plugin, Tool
-from app.api.schemas import PluginContext
+from app.api.schemas import PluginRuntime
 
 
 # 1. Define Input Schema
@@ -45,7 +45,7 @@ class TMDb(Plugin):
         input_schema = TMDbMetadataInput
         version = "1.0.0"
 
-        def is_available(self, settings: TMDbSettings | None, _context: PluginContext) -> bool:
+        def is_available(self, settings: TMDbSettings | None, _runtime: PluginRuntime) -> bool:
             """Check if TMDb API key is configured."""
             if settings is None:
                 return False

@@ -14,7 +14,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-from .schemas import ContextResponse, PluginContext
+from .schemas import ContextResponse, PluginRuntime
 
 
 @runtime_checkable
@@ -90,7 +90,7 @@ class Tool(Protocol):
         """
         ...
 
-    def is_available(self, settings: BaseModel | None, context: PluginContext) -> bool:
+    def is_available(self, settings: BaseModel | None, runtime: PluginRuntime) -> bool:
         """
         Check if this tool is available given its settings and system context.
 
@@ -99,7 +99,7 @@ class Tool(Protocol):
 
         Args:
             settings: Validated settings instance (BaseModel) for this tool, or None if no settings_model defined
-            context: Complete PluginContext with access to all system state
+            runtime: Complete PluginRuntime with access to all system state
 
         Returns:
             True if the tool can be used, False otherwise.
@@ -107,7 +107,7 @@ class Tool(Protocol):
         ...
 
     async def execute(
-        self, context: PluginContext, settings: BaseModel | None, **kwargs: Any
+        self, runtime: PluginRuntime, settings: BaseModel | None, **kwargs: Any
     ) -> Any:
         """
         The actual logic.
@@ -115,7 +115,7 @@ class Tool(Protocol):
         Philosophy: Tools never fetch context themselves — context is injected.
 
         Args:
-            context: PluginContext with safe access to system state
+            runtime: PluginRuntime with safe access to system state
             settings: Validated settings instance (BaseModel) for this tool, or None if no settings_model defined
             **kwargs: valid data matching input_schema.
 
@@ -150,12 +150,9 @@ class ContextProvider(Protocol):
         """
         ...
 
-    async def provide_context(self, context: PluginContext) -> ContextResponse:
+    async def provide_context(self) -> ContextResponse:
         """
         Fetch the dynamic context data.
-
-        Args:
-            context: Safe PluginContext facade (not the full loader).
 
         Returns:
             ContextResponse with context data (will be truncated if too large).
