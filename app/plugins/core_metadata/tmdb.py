@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from curl_cffi.requests import AsyncSession, RequestsError
 from pydantic import BaseModel, Field, SecretStr
@@ -11,7 +11,7 @@ from app.api.schemas import PluginRuntime
 class TMDbMetadataInput(BaseModel):
     title: str = Field(..., description="The movie or TV show title")
     year: int | None = Field(None, description="Release year (optional but recommended)")
-    type: str = Field("movie", description="Type of media: 'movie' or 'tv'")
+    type: Literal["movie", "tv"] = Field("movie", description="Type of media: 'movie' or 'tv'")
 
 
 # 2. Define Settings Model (BaseModel, NOT BaseSettings - loader handles env loading)
