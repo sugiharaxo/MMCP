@@ -19,7 +19,7 @@ Example:
             description = "Does something"
             input_schema = MyInputSchema
 
-            async def execute(self, context, settings, **kwargs):
+            async def execute(self, **kwargs):
                 return {"result": "Hello from my tool!"}
 """
 
