@@ -1,6 +1,7 @@
 """Shared pytest fixtures for MMCP tests."""
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -88,3 +89,59 @@ def env_override(monkeypatch):
             monkeypatch.setenv(key, value)
 
     return _override
+
+
+@pytest.fixture(scope="session", autouse=True)
+async def init_test_database():
+    """Initialize database for all tests that need it."""
+    # Use in-memory SQLite for tests
+    from app.core.config import settings
+
+    # Override database path to use in-memory database
+    original_db_path = settings.data_dir / "mmcp.db"
+    test_db_url = "sqlite+aiosqlite:///:memory:"
+
+    # Monkey patch the database URL
+    import app.core.database
+
+    original_init_database = app.core.database.init_database
+
+    async def mock_init_database():
+        """Mock init_database to use in-memory database."""
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+        from app.core.database import Base
+
+        global _engine, _session_maker
+        app.core.database._engine = create_async_engine(
+            test_db_url,
+            echo=False,
+            pool_pre_ping=True,
+            connect_args={"check_same_thread": False},
+        )
+        app.core.database._session_maker = async_sessionmaker(
+            app.core.database._engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+
+        # Create tables
+        async with app.core.database._engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    app.core.database.init_database = mock_init_database
+
+    try:
+        await mock_init_database()
+        yield
+    finally:
+        # Cleanup
+        if hasattr(app.core.database, "_engine") and app.core.database._engine:
+            await app.core.database._engine.dispose()
+        app.core.database.init_database = original_init_database
+
+
+@pytest.fixture
+def mock_session():
+    """Create a mock database session."""
+    return AsyncMock()

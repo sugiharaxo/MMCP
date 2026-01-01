@@ -9,6 +9,10 @@ from typing import Any, Union
 from pydantic import BaseModel
 
 from app.agent.schemas import FinalResponse
+
+# ANP imports
+from app.anp.agent_integration import AgentNotificationInjector
+from app.anp.event_bus import EventBus
 from app.core.config import settings
 from app.core.context import MMCPContext
 from app.core.errors import (
@@ -44,8 +48,12 @@ class AgentOrchestrator:
         self.loader = loader
         self.history: list[dict] = []
         self.health = health or HealthMonitor()
+        # ANP integration
+        event_bus = EventBus()
+        self.notification_injector = AgentNotificationInjector(event_bus)
+        self._internal_turn = False
 
-    def _get_system_prompt(self, context: MMCPContext | None = None) -> str:
+    async def _get_system_prompt(self, context: MMCPContext | None = None) -> str:
         """
         Generate system prompt with dynamic tool descriptions and context-aware state.
 
@@ -54,6 +62,8 @@ class AgentOrchestrator:
 
         Injects dynamic state from context (user preferences, media state) to make
         the LLM aware of current server state.
+
+        Also injects ANP notifications (pending + recent user ACKs) for shared awareness.
         """
         if not self.loader:
             tool_desc = "No tools are currently available."
@@ -111,6 +121,14 @@ class AgentOrchestrator:
         # Add standby alerts for system awareness
         standby_alerts = self._get_standby_alerts()
 
+        # ANP: Inject notifications (pending + recent user ACKs)
+        user_id = "default"  # Single-user system for now
+        pending = await self.notification_injector.get_pending_notifications(user_id)
+        recent_acks = await self.notification_injector.get_recent_user_acks(user_id)
+        notification_section = self.notification_injector.format_for_system_prompt(
+            pending, recent_acks
+        )
+
         return f"""You are MMCP (Modular Media Control Plane), an intelligent media assistant.
 You help users manage their media library, search for metadata, and handle downloads.
 
@@ -122,6 +140,8 @@ IDENTITY:
 {context_section}
 
 {standby_alerts}
+
+{notification_section}
 
 AVAILABLE TOOLS:
 {tool_desc}
@@ -435,211 +455,257 @@ Use tools when you need specific information or actions. When you have enough in
         # This runs on EVERY user message to ensure fresh context is available
         await self.assemble_llm_context(user_input, context)
 
-        # 2. Reconstruct history: PIN system at top, keep ALL other history
-        # We only filter out 'system' to prevent duplicates.
-        # We MUST keep 'user', 'assistant', and 'tool' roles.
-        system_message = {"role": "system", "content": self._get_system_prompt(context)}
-        messages = [m for m in self.history if m["role"] != "system"]
-        self.history = [system_message] + messages
+        # ANP: Acquire agent turn lock for causal serialization
+        event_bus = EventBus()
+        agent_turn_lock = event_bus.get_agent_turn_lock()
+        await agent_turn_lock.acquire()
 
-        # 3. Add the user's current message
-        self.history.append({"role": "user", "content": user_input})
+        try:
+            # Store last_turn_time for shared awareness queries
+            from datetime import datetime
 
-        # Build the Union response model: FinalResponse | ToolSchema1 | ToolSchema2 | ...
-        ResponseModel = self._get_response_model()
+            self.notification_injector.set_last_turn_time(datetime.utcnow())
 
-        # ReAct loop: allow multiple reasoning steps
-        max_steps = 5  # Prevent infinite loops
-        llm_retry_count = 0
-        max_llm_retries = 2  # Allow LLM to self-correct on validation errors
-        rate_limit_retry_count = 0
-        max_rate_limit_retries = 3  # Allow up to 3 retries for rate limits
+            # 2. Reconstruct history: PIN system at top, keep ALL other history
+            # We only filter out 'system' to prevent duplicates.
+            # We MUST keep 'user', 'assistant', and 'tool' roles.
+            system_message = {
+                "role": "system",
+                "content": await self._get_system_prompt(context),
+            }
+            messages = [m for m in self.history if m["role"] != "system"]
+            self.history = [system_message] + messages
 
-        for step in range(max_steps):
-            context.increment_step()
-            self._trim_history()
+            # 3. Add the user's current message
+            self.history.append({"role": "user", "content": user_input})
 
-            # 1. Ask the LLM what to do
-            try:
-                context.increment_llm_call()
-                response = await get_agent_decision(self.history, response_model=ResponseModel)
-                llm_retry_count = 0  # Reset retry count on success
-            except Exception as e:
-                # Map the error
-                agent_error = map_agent_error(e, trace_id=trace_id)
+            # Build the Union response model: FinalResponse | ToolSchema1 | ToolSchema2 | ...
+            ResponseModel = self._get_response_model()
 
-                # For validation/parsing errors, feed back to LLM for self-correction
-                if agent_error.retryable and llm_retry_count < max_llm_retries:
-                    llm_retry_count += 1
-                    logger.warning(
-                        f"LLM validation error (attempt {llm_retry_count}/{max_llm_retries}), "
-                        f"feeding back to LLM for self-correction (trace_id={trace_id})"
-                    )
-                    # Feed error back to LLM so it can correct itself
-                    self.history.append(
-                        {
-                            "role": "assistant",
-                            "content": f"Error: {agent_error.message} Please provide a valid response.",
-                        }
-                    )
-                    continue  # Retry the LLM call
+            # ReAct loop: allow multiple reasoning steps
+            max_steps = 5  # Prevent infinite loops
+            llm_retry_count = 0
+            max_llm_retries = 2  # Allow LLM to self-correct on validation errors
+            rate_limit_retry_count = 0
+            max_rate_limit_retries = 3  # Allow up to 3 retries for rate limits
 
-                # For provider errors, check if they're fatal
-                provider_error = map_provider_error(e, trace_id=trace_id)
-                if isinstance(provider_error, MMCPError) and not provider_error.retryable:
-                    # Fatal error (e.g., config issue) - raise it
+            for step in range(max_steps):
+                context.increment_step()
+                self._trim_history()
+
+                # 1. Ask the LLM what to do
+                try:
+                    context.increment_llm_call()
+                    response = await get_agent_decision(self.history, response_model=ResponseModel)
+                    llm_retry_count = 0  # Reset retry count on success
+                except Exception as e:
+                    # Map the error
+                    agent_error = map_agent_error(e, trace_id=trace_id)
+
+                    # For validation/parsing errors, feed back to LLM for self-correction
+                    if agent_error.retryable and llm_retry_count < max_llm_retries:
+                        llm_retry_count += 1
+                        logger.warning(
+                            f"LLM validation error (attempt {llm_retry_count}/{max_llm_retries}), "
+                            f"feeding back to LLM for self-correction (trace_id={trace_id})"
+                        )
+                        # Feed error back to LLM so it can correct itself
+                        self.history.append(
+                            {
+                                "role": "assistant",
+                                "content": f"Error: {agent_error.message} Please provide a valid response.",
+                            }
+                        )
+                        continue  # Retry the LLM call
+
+                    # For provider errors, check if they're fatal
+                    provider_error = map_provider_error(e, trace_id=trace_id)
+                    if isinstance(provider_error, MMCPError) and not provider_error.retryable:
+                        # Fatal error (e.g., config issue) - raise it
+                        logger.error(
+                            f"Fatal provider error (trace_id={trace_id}): {e}",
+                            exc_info=True,
+                            extra={"trace_id": trace_id},
+                        )
+                        raise provider_error from e
+
+                    # Special handling for rate limit errors - implement exponential backoff
+                    is_rate_limit = "rate limit" in str(e).lower() or "429" in str(e)
+                    if is_rate_limit and rate_limit_retry_count < max_rate_limit_retries:
+                        rate_limit_retry_count += 1
+                        # Exponential backoff: 1s, 2s, 4s
+                        backoff_seconds = 2 ** (rate_limit_retry_count - 1)
+                        logger.warning(
+                            f"Rate limit hit (attempt {rate_limit_retry_count}/{max_rate_limit_retries}), "
+                            f"backing off for {backoff_seconds}s (trace_id={trace_id})"
+                        )
+                        await asyncio.sleep(backoff_seconds)
+                        continue  # Retry the LLM call after backoff
+
+                    # Non-fatal provider error or max retries reached - return user-friendly message
                     logger.error(
-                        f"Fatal provider error (trace_id={trace_id}): {e}",
+                        f"Failed to get agent decision after retries (trace_id={trace_id}): {e}",
                         exc_info=True,
                         extra={"trace_id": trace_id},
                     )
-                    raise provider_error from e
-
-                # Special handling for rate limit errors - implement exponential backoff
-                is_rate_limit = "rate limit" in str(e).lower() or "429" in str(e)
-                if is_rate_limit and rate_limit_retry_count < max_rate_limit_retries:
-                    rate_limit_retry_count += 1
-                    # Exponential backoff: 1s, 2s, 4s
-                    backoff_seconds = 2 ** (rate_limit_retry_count - 1)
-                    logger.warning(
-                        f"Rate limit hit (attempt {rate_limit_retry_count}/{max_rate_limit_retries}), "
-                        f"backing off for {backoff_seconds}s (trace_id={trace_id})"
+                    error_message = (
+                        provider_error.message
+                        if isinstance(provider_error, MMCPError)
+                        else agent_error.message
                     )
-                    await asyncio.sleep(backoff_seconds)
-                    continue  # Retry the LLM call after backoff
+                    return f"I encountered an issue processing your request. Error: {error_message}"
 
-                # Non-fatal provider error or max retries reached - return user-friendly message
-                logger.error(
-                    f"Failed to get agent decision after retries (trace_id={trace_id}): {e}",
-                    exc_info=True,
-                    extra={"trace_id": trace_id},
-                )
-                error_message = (
-                    provider_error.message
-                    if isinstance(provider_error, MMCPError)
-                    else agent_error.message
-                )
-                return f"I encountered an issue processing your request. Error: {error_message}"
+                # 2. Route based on response type using isinstance
 
-            # 2. Route based on response type using isinstance
+                if isinstance(response, FinalResponse):
+                    # Agent wants to respond to user - we're done
+                    self._emit_status(
+                        f"\n[Step {step + 1}] Final Response: {response.answer}",
+                        trace_id,
+                        status_type="thought",
+                    )
 
-            if isinstance(response, FinalResponse):
-                # Agent wants to respond to user - we're done
+                    # ANP: Process agent ACKs
+                    if response.acknowledged_ids:
+                        await self.notification_injector.mark_agent_processed(
+                            response.acknowledged_ids
+                        )
+
+                    context.log_inspection()
+                    self.history.append({"role": "assistant", "content": response.answer})
+
+                    # ANP: Flush system alert queue after agent turn
+                    await event_bus.flush_system_alert_queue()
+
+                    return response.answer
+
+                # It's a tool! Map the schema class to the tool instance
+                tool = self.loader.get_tool_by_schema(type(response))
+                if not tool:
+                    # Tool not found for this schema - this shouldn't happen if mapping is correct
+                    tool_name = type(response).__name__
+                    result = (
+                        f"Error: Tool for schema '{tool_name}' not found. "
+                        f"Available tools: {list(self.loader.list_tools().keys())}"
+                    )
+                    logger.error(
+                        result,
+                        extra={"trace_id": trace_id, "schema_class": tool_name},
+                    )
+                    # Feed error back and continue loop
+                    self.history.append(
+                        {
+                            "role": "user",
+                            "content": f"Observation: {result}",
+                        }
+                    )
+                    continue
+
+                # Check if tool is in standby (not fully configured)
+                tool_name = tool.name
+                is_standby = tool_name in self.loader.standby_tools
+
+                if is_standby:
+                    # Tool is on standby - return user-friendly error with setup instructions
+                    # Get plugin name for error lookup (settings are stored at plugin level)
+                    plugin_name = tool.plugin_name
+                    config_error = self.loader._plugin_config_errors.get(
+                        plugin_name, "Setup required"
+                    )
+                    env_prefix = f"MMCP_PLUGIN_{self.loader._slugify_plugin_name(plugin_name)}_"
+                    result = (
+                        f"Tool '{tool_name}' is on standby. {config_error}. "
+                        f"Set environment variables starting with '{env_prefix}' or configure via the Web UI at /api/v1/settings/plugins/{self.loader._slugify_plugin_name(plugin_name).lower()}."
+                    )
+                    logger.info(
+                        f"Standby tool '{tool_name}' was called (trace_id={trace_id})",
+                        extra={"trace_id": trace_id, "tool_name": tool_name},
+                    )
+                    # Feed error back to LLM so it can inform the user
+                    self.history.append(
+                        {
+                            "role": "user",
+                            "content": f"Observation from {tool_name}: {result}",
+                        }
+                    )
+                    continue
+
+                # Execute the tool with validated arguments (response is already a Pydantic model)
+                # Use mode='json' to ensure SecretStr fields are masked (not stringified as SecretStr('**********'))
+                tool_args = response.model_dump(mode="json")
+
+                # ANP: Check tool classification and promote EXTERNAL tools for user visibility
+                # Classification is a ClassVar with default "EXTERNAL" (safety-first per ANP spec)
+                if tool.classification == "EXTERNAL":
+                    logger.debug(f"Tool '{tool_name}' is EXTERNAL, promoting for user visibility")
+                    await self.notification_injector.promote_external_tool()
+                else:
+                    logger.debug(f"Tool '{tool_name}' is INTERNAL, no user notification required")
+
                 self._emit_status(
-                    f"\n[Step {step + 1}] Final Response: {response.answer}",
+                    f"[Step {step + 1}] Action: Call tool '{tool_name}' with args {tool_args}",
                     trace_id,
-                    status_type="thought",
+                    status_type="tool_start",
                 )
-                context.log_inspection()
-                self.history.append({"role": "assistant", "content": response.answer})
-                return response.answer
-
-            # It's a tool! Map the schema class to the tool instance
-            tool = self.loader.get_tool_by_schema(type(response))
-            if not tool:
-                # Tool not found for this schema - this shouldn't happen if mapping is correct
-                tool_name = type(response).__name__
-                result = (
-                    f"Error: Tool for schema '{tool_name}' not found. "
-                    f"Available tools: {list(self.loader.list_tools().keys())}"
-                )
-                logger.error(
-                    result,
-                    extra={"trace_id": trace_id, "schema_class": tool_name},
-                )
-                # Feed error back and continue loop
-                self.history.append(
-                    {
-                        "role": "user",
-                        "content": f"Observation: {result}",
-                    }
-                )
-                continue
-
-            # Check if tool is in standby (not fully configured)
-            tool_name = tool.name
-            is_standby = tool_name in self.loader.standby_tools
-
-            if is_standby:
-                # Tool is on standby - return user-friendly error with setup instructions
-                # Get plugin name for error lookup (settings are stored at plugin level)
-                plugin_name = tool.plugin_name
-                config_error = self.loader._plugin_config_errors.get(plugin_name, "Setup required")
-                env_prefix = f"MMCP_PLUGIN_{self.loader._slugify_plugin_name(plugin_name)}_"
-                result = (
-                    f"Tool '{tool_name}' is on standby. {config_error}. "
-                    f"Set environment variables starting with '{env_prefix}' or configure via the Web UI at /api/v1/settings/plugins/{self.loader._slugify_plugin_name(plugin_name).lower()}."
-                )
+                context.increment_tool_execution()
                 logger.info(
-                    f"Standby tool '{tool_name}' was called (trace_id={trace_id})",
+                    f"Executing tool: {tool_name} with {tool_args}",
                     extra={"trace_id": trace_id, "tool_name": tool_name},
                 )
-                # Feed error back to LLM so it can inform the user
+
+                result, is_error = await self.safe_tool_call(tool, tool_name, tool_args, context)
+                self._emit_status(
+                    f"[Step {step + 1}] Observation: {result}",
+                    trace_id,
+                    status_type="tool_end",
+                )
+
+                # Check for repeated tool failures - if same tool fails 3+ times, force final response
+                if is_error and context.is_tool_circuit_breaker_tripped(tool_name, threshold=3):
+                    failure_count = context.get_tool_failure_count(tool_name)
+                    msg = f"I encountered a persistent issue with the {tool_name} tool. {result}"
+                    logger.error(
+                        f"Circuit breaker triggered for {tool_name} after {failure_count} failures "
+                        f"(trace_id={trace_id})",
+                        extra={
+                            "trace_id": trace_id,
+                            "tool_name": tool_name,
+                            "failure_count": failure_count,
+                        },
+                    )
+                    # Immediate return - bypasses the rest of the loop and prevents LLM from trying again
+                    context.log_inspection()
+                    # ANP: Flush system alert queue after agent turn
+                    await event_bus.flush_system_alert_queue()
+                    return msg
+
+                # Feed tool result back into history for next iteration
+                self._trim_history()
+                # This allows the LLM to process errors and adapt its strategy
                 self.history.append(
                     {
                         "role": "user",
                         "content": f"Observation from {tool_name}: {result}",
                     }
                 )
-                continue
+                # Loop continues so LLM can process the result
 
-            # Execute the tool with validated arguments (response is already a Pydantic model)
-            # Use mode='json' to ensure SecretStr fields are masked (not stringified as SecretStr('**********'))
-            tool_args = response.model_dump(mode="json")
+            # If we've exhausted max steps, return a message
+            logger.warning(
+                f"ReAct loop exhausted {max_steps} steps without final response (trace_id={trace_id})",
+                extra={"trace_id": trace_id, "max_steps": max_steps},
+            )
+            context.log_inspection()
             self._emit_status(
-                f"[Step {step + 1}] Action: Call tool '{tool_name}' with args {tool_args}",
+                f"[System] ReAct loop exhausted {max_steps} steps without resolution",
                 trace_id,
-                status_type="tool_start",
-            )
-            context.increment_tool_execution()
-            logger.info(
-                f"Executing tool: {tool_name} with {tool_args}",
-                extra={"trace_id": trace_id, "tool_name": tool_name},
+                status_type="info",
             )
 
-            result, is_error = await self.safe_tool_call(tool, tool_name, tool_args, context)
-            self._emit_status(
-                f"[Step {step + 1}] Observation: {result}",
-                trace_id,
-                status_type="tool_end",
-            )
+            # ANP: Flush system alert queue after agent turn
+            await event_bus.flush_system_alert_queue()
 
-            # Check for repeated tool failures - if same tool fails 3+ times, force final response
-            if is_error and context.is_tool_circuit_breaker_tripped(tool_name, threshold=3):
-                failure_count = context.get_tool_failure_count(tool_name)
-                msg = f"I encountered a persistent issue with the {tool_name} tool. {result}"
-                logger.error(
-                    f"Circuit breaker triggered for {tool_name} after {failure_count} failures "
-                    f"(trace_id={trace_id})",
-                    extra={
-                        "trace_id": trace_id,
-                        "tool_name": tool_name,
-                        "failure_count": failure_count,
-                    },
-                )
-                # Immediate return - bypasses the rest of the loop and prevents LLM from trying again
-                context.log_inspection()
-                return msg
-
-            # Feed tool result back into history for next iteration
-            # This allows the LLM to process errors and adapt its strategy
-            self.history.append(
-                {
-                    "role": "user",
-                    "content": f"Observation from {tool_name}: {result}",
-                }
-            )
-            # Loop continues so LLM can process the result
-
-        # If we've exhausted max steps, return a message
-        logger.warning(
-            f"ReAct loop exhausted {max_steps} steps without final response (trace_id={trace_id})",
-            extra={"trace_id": trace_id, "max_steps": max_steps},
-        )
-        context.log_inspection()
-        self._emit_status(
-            f"[System] ReAct loop exhausted {max_steps} steps without resolution",
-            trace_id,
-            status_type="info",
-        )
-        return "I attempted to solve this but reached my reasoning limit. Please try being more specific or breaking down your request."
+            return "I attempted to solve this but reached my reasoning limit. Please try being more specific or breaking down your request."
+        finally:
+            # ANP: Release agent turn lock
+            agent_turn_lock.release()

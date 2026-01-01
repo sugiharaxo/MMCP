@@ -9,6 +9,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.agent.orchestrator import AgentOrchestrator
+from app.anp.event_bus import EventBus
+from app.anp.session_manager import SessionManager
+from app.anp.watchdog import WatchdogService
+from app.anp.websocket_manager import WebSocketManager
+from app.api.routes import notifications as notifications_routes
 from app.api.routes import settings as settings_routes
 from app.core.auth import ensure_admin_token
 from app.core.config import settings
@@ -23,25 +28,24 @@ from app.core.errors import (
     ToolError,
     error_to_detail,
 )
+from app.core.health import HealthMonitor
 from app.core.logger import logger
 from app.core.plugin_loader import PluginLoader
 
-# 2. Setup Paths
 BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
 STATIC_DIR.mkdir(exist_ok=True)
 
-# 3. Initialize Plugin Loader
+
 loader = PluginLoader(settings.plugin_dir)
-
-# 4. Initialize Health Monitor (singleton at app state level)
-# This ensures circuit breaker state persists across requests
-from app.core.health import HealthMonitor
-
 health_monitor = HealthMonitor()
-
-# 5. Initialize Agent Orchestrator (inject health monitor)
 orchestrator = AgentOrchestrator(loader, health_monitor)
+event_bus = EventBus()
+websocket_manager = WebSocketManager()
+watchdog_service = WatchdogService(event_bus)
+session_manager = SessionManager()
+event_bus.set_session_manager(session_manager)
+websocket_manager.set_event_bus(event_bus)
 
 
 @asynccontextmanager
@@ -57,12 +61,19 @@ async def lifespan(_app: FastAPI):
     # Load plugins (now async)
     await loader.load_plugins()
 
-    # Attach loader to app state for dependency injection
+    # Attach components to app state for dependency injection
     _app.state.loader = loader
+    _app.state.event_bus = event_bus
+    _app.state.websocket_manager = websocket_manager
+    _app.state.session_manager = session_manager
+
+    # Start ANP watchdog service
+    await watchdog_service.start()
 
     yield
 
-    # Shutdown: Close database connection
+    # Shutdown: Stop ANP services and close database
+    await watchdog_service.stop()
     await close_database()
 
 
@@ -178,6 +189,7 @@ async def general_exception_handler(_request: Request, exc: Exception) -> JSONRe
 # --- API Endpoints ---
 
 app.include_router(settings_routes.router)
+app.include_router(notifications_routes.router)
 
 
 @app.get("/api/v1/status")

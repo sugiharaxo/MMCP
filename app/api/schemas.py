@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.anp.schemas import NotificationCreate
 from app.core.config import CoreSettings
 
 
@@ -67,3 +68,21 @@ class PluginRuntime(BaseModel):
 
     # System information (read-only)
     system: dict[str, Any]
+
+    async def emit_notification(self, notification: "NotificationCreate") -> str:
+        """
+        Emit a notification via ANP Event Bus.
+
+        Plugins can call this to send notifications to users or agents.
+        Access via self.system.emit_notification() in tools/providers.
+
+        Args:
+            notification: NotificationCreate schema
+
+        Returns:
+            Notification ID (UUID string)
+        """
+        from app.anp.event_bus import EventBus
+
+        event_bus = EventBus()
+        return await event_bus.emit_notification(notification)

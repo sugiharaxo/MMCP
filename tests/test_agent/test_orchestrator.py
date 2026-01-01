@@ -186,7 +186,8 @@ async def test_system_prompt_self_healing_filters_duplicates(orchestrator: Agent
     assert len(orchestrator.history) == 3  # system + user + assistant
 
 
-def test_system_prompt_includes_context(orchestrator: AgentOrchestrator):
+@pytest.mark.asyncio
+async def test_system_prompt_includes_context(orchestrator: AgentOrchestrator):
     """Test that system prompt includes context data (plugins are responsible for sanitization)."""
     from app.core.context import MMCPContext
 
@@ -195,7 +196,7 @@ def test_system_prompt_includes_context(orchestrator: AgentOrchestrator):
     context.llm.user_preferences = {"theme": "dark", "language": "en"}
     context.llm.media_state = {"jellyfin": {"server_url": "http://localhost:8096"}}
 
-    prompt = orchestrator._get_system_prompt(context)
+    prompt = await orchestrator._get_system_prompt(context)
 
     # Should contain context data (raw, as plugins are responsible for sanitization)
     assert "CONTEXT:" in prompt
