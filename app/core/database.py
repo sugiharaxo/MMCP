@@ -13,6 +13,7 @@ from sqlalchemy import String
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+# ANP models are registered with Base when imported elsewhere
 from app.core.config import settings
 from app.core.logger import logger
 

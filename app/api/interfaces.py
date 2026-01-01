@@ -10,7 +10,7 @@ This prevents internal implementation details from leaking through inheritance.
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
@@ -87,6 +87,20 @@ class Tool(Protocol):
             class MyTool(Tool):
                 # Tools automatically inherit settings from parent plugin
                 ...
+        """
+        ...
+
+    @property
+    def classification(self) -> Literal["INTERNAL", "EXTERNAL"]:
+        """
+        Tool classification for ANP protocol compliance.
+
+        - **EXTERNAL**: User must be made aware of invocation (default, safety-first).
+          For operations that produce user-visible effects (File I/O, API writes, etc.).
+        - **INTERNAL**: Invocation is audited but user notification not required.
+          For agent-internal context, reasoning, memory, or ephemeral processing.
+
+        See ANP spec Section 6.1 for details on classification semantics.
         """
         ...
 

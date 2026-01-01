@@ -7,19 +7,31 @@ that are automatically discovered via __init_subclass__ magic.
 
 import abc
 import logging
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel as Settings
 
 
 class Tool(abc.ABC):
-    """Base for all Tools. Inheriting provides managed logging and settings."""
+    """
+    Base for all Tools. Inheriting provides managed logging and settings.
+
+    Tool Classification:
+    - INTERNAL: Invocation is audited, but user does not have to be notified.
+                For agent-internal context, reasoning, memory, or ephemeral processing.
+    - EXTERNAL: If invoked, user must be made aware (hard spec requirement).
+                For operations that produce user-visible effects.
+                Defaults to EXTERNAL (safety-first).
+
+    Plugins should set this appropriately in their tool class definition.
+    """
 
     name: ClassVar[str]
     description: ClassVar[str]
     input_schema: ClassVar[type[Settings]]
     version: ClassVar[str] = "1.0.0"
     settings_model: ClassVar[type[Settings] | None] = None
+    classification: ClassVar[Literal["INTERNAL", "EXTERNAL"]] = "EXTERNAL"
 
     def __init_subclass__(cls, **kwargs):
         """
