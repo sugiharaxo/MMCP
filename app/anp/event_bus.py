@@ -143,9 +143,19 @@ class EventBus:
             existing.content = notification.content
             existing.event_metadata = notification.metadata
             existing.delivery_deadline = notification.delivery_deadline
-            # Reset status to PENDING if it was DISPATCHED
+            # Reset status to PENDING if it was DISPATCHED (atomic transition)
             if existing.status == EventStatus.DISPATCHED:
-                existing.status = EventStatus.PENDING
+                success = await self._transition_state(
+                    session, existing.id, EventStatus.DISPATCHED, EventStatus.PENDING, None
+                )
+                if not success:
+                    # Event transitioned to terminal state - don't update, create new instead
+                    await session.rollback()
+                    logger.warning(
+                        f"Deduplication failed: event {existing.id} transitioned to terminal state"
+                    )
+                    return None
+
             await session.commit()
             await session.refresh(existing)
             return existing
