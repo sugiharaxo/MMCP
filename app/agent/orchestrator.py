@@ -255,7 +255,7 @@ Use tools when you need specific information or actions. When you have enough in
             logger.debug(f"Trimmed context to {current_chars} chars.")
 
     async def _safe_execute_provider(
-        self, provider, user_input: str
+        self, provider, user_input: str, context: MMCPContext
     ) -> tuple[str, dict[str, Any] | None]:
         """
         Safely execute a context provider with timeout and error handling.
@@ -281,7 +281,9 @@ Use tools when you need specific information or actions. When you have enough in
 
             # Execute with per-provider timeout using PluginRuntime facade
             timeout_seconds = settings.context_per_provider_timeout_ms / 1000.0
-            result = await asyncio.wait_for(provider.provide_context(), timeout=timeout_seconds)
+            result = await asyncio.wait_for(
+                provider.provide_context(context), timeout=timeout_seconds
+            )
 
             # Extract data from ContextResponse
             data = result.data
@@ -342,7 +344,7 @@ Use tools when you need specific information or actions. When you have enough in
         )
 
         # Run all providers in parallel with global timeout
-        tasks = [self._safe_execute_provider(p, user_input) for p in active_providers]
+        tasks = [self._safe_execute_provider(p, user_input, context) for p in active_providers]
 
         try:
             global_timeout_seconds = settings.context_global_timeout_ms / 1000.0
