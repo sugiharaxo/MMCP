@@ -99,7 +99,7 @@ class AGUI {
     if (this.ws) return;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    const wsUrl = `${protocol}//${window.location.host}/api/v1/notifications/ws`;
 
     this.ws = new WebSocket(wsUrl);
 
