@@ -6,32 +6,25 @@ import uuid
 from datetime import timezone
 from functools import reduce
 from inspect import isclass
-from typing import Any, Union
+from typing import Union
 
-from litellm import acompletion
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from app.agent.context_manager import ContextManager
+from app.agent.history_manager import HistoryManager
+from app.agent.llm_interface import LLMInterface
+from app.agent.react_loop import ReActLoop
 from app.agent.schemas import ActionRequestResponse, FinalResponse
+from app.agent.session_manager import SessionManager
 
 # ANP imports (EventBus for agent turn lock, AgentNotificationInjector for async notifications)
 from app.anp.agent_integration import AgentNotificationInjector
 from app.anp.event_bus import EventBus
-from app.anp.models import ChatSession
-from app.core.config import settings
 from app.core.context import MMCPContext
-from app.core.database import get_session
-from app.core.errors import (
-    MMCPError,
-    map_agent_error,
-    map_provider_error,
-    map_tool_error,
-)
 from app.core.health import HealthMonitor
-from app.core.llm import get_agent_decision
 from app.core.logger import logger
 from app.core.plugin_loader import PluginLoader
-from app.core.utils.pruner import ContextPruner
 
 
 class AgentOrchestrator:
@@ -52,127 +45,18 @@ class AgentOrchestrator:
                    (for backward compatibility, but not recommended for production).
         """
         self.loader = loader
-        self.history: list[dict] = []
         self.health = health or HealthMonitor()
-        # EventBus only needed for agent turn lock and async notifications
+
+        # Initialize components
+        self.session_manager = SessionManager()
+        self.react_loop = ReActLoop(loader, self._emit_status)
+        self.llm_interface = LLMInterface()
+        self.history_manager = HistoryManager()
+
+        # ANP components
         self.event_bus = EventBus()
         self.notification_injector = AgentNotificationInjector(self.event_bus)
-        self._internal_turn = False
-
-    async def _get_system_prompt(self, context: MMCPContext | None = None) -> str:
-        """
-        Generate system prompt with dynamic tool descriptions and context-aware state.
-
-        Simplified prompt focusing on "when to use tools" rather than formatting rules.
-        The Union response_model handles the "how" of formatting automatically.
-
-        Injects dynamic state from context (user preferences, media state) to make
-        the LLM aware of current server state.
-
-        Also injects relevant context for agent awareness.
-        """
-        if not self.loader:
-            tool_desc = "No tools are currently available."
-        else:
-            tool_descriptions = []
-            for idx, (name, tool) in enumerate(self.loader.tools.items(), start=1):
-                desc = f"{idx}. {name}: {tool.description}"
-
-                # Add clean argument descriptions instead of raw JSON schema
-                if hasattr(tool, "input_schema"):
-                    schema = tool.input_schema
-                    schema_json = schema.model_json_schema()
-                    properties = schema_json.get("properties", {})
-                    required = schema_json.get("required", [])
-
-                    if properties:
-                        arg_list = []
-                        for prop_name, prop_info in properties.items():
-                            prop_type = prop_info.get("type", "any")
-                            is_required = prop_name in required
-                            prop_desc = prop_info.get("description", "")
-                            default = prop_info.get("default", None)
-
-                            if is_required:
-                                arg_list.append(
-                                    f"  - {prop_name} ({prop_type}): {prop_desc} [REQUIRED]"
-                                )
-                            else:
-                                default_str = f", default: {default}" if default is not None else ""
-                                arg_list.append(
-                                    f"  - {prop_name} ({prop_type}): {prop_desc} [optional{default_str}]"
-                                )
-
-                        if arg_list:
-                            desc += "\n   Args:\n" + "\n".join(arg_list)
-
-                tool_descriptions.append(desc)
-
-            tool_desc = "\n".join(tool_descriptions)
-
-        # Get the sanitized LLM payload for context-aware prompts
-        context_section = ""
-        if context:
-            state = context.get_llm_payload()
-            # Build human-readable state description
-            state_parts = []
-            if state.get("user_preferences"):
-                state_parts.append(f"User Preferences: {state['user_preferences']}")
-            if state.get("media_state"):
-                state_parts.append(f"Media State: {state['media_state']}")
-            if state_parts:
-                state_desc = "\n".join(state_parts)
-                context_section = f"CONTEXT:\n{state_desc}"
-
-        # Add standby alerts for system awareness
-        standby_alerts = self._get_standby_alerts()
-
-        # Inject notifications (pending + recent user ACKs)
-        user_id = "default"  # Single-user system for now
-        pending = await self.notification_injector.get_pending_notifications(user_id)
-        recent_acks = await self.notification_injector.get_recent_user_acks(user_id)
-        notification_section = self.notification_injector.format_for_system_prompt(
-            pending, recent_acks
-        )
-
-        return f"""You are MMCP (Modular Media Control Plane), an intelligent media assistant.
-You help users manage their media library, search for metadata, and handle downloads.
-
-IDENTITY:
-- Be concise and helpful.
-- Use tools to fetch data before making recommendations.
-- If a tool fails, explain why to the user and try a different approach.
-
-{context_section}
-
-{standby_alerts}
-
-{notification_section}
-
-AVAILABLE TOOLS:
-{tool_desc}
-
-Use tools when you need specific information or actions. When you have enough information to answer the user, provide a FinalResponse with your answer."""
-
-    def _get_standby_alerts(self) -> str:
-        """
-        Generate system prompt section for plugins that failed to load.
-
-        Only reports plugins that FAILED to load, providing the 'Proprioception'.
-        This keeps the context lean while enabling self-resolution.
-        """
-        standby = self.loader.standby_tools
-        if not standby:
-            return ""
-
-        alerts = ["DISABLED CAPABILITIES (SYSTEM ERRORS):"]
-        for name, tool in standby.items():
-            # Get plugin name for error lookup (settings are stored at plugin level)
-            plugin_name = tool.plugin_name
-            reason = self.loader._plugin_config_errors.get(plugin_name, "Unknown system error")
-            alerts.append(f"- {name}: {reason}")
-
-        return "\n".join(alerts)
+        self.context_manager = ContextManager(loader, self.notification_injector, self.health)
 
     def _get_response_model(self) -> type:
         """
@@ -207,7 +91,7 @@ Use tools when you need specific information or actions. When you have enough in
 
         return ResponseModel
 
-    def _emit_status(
+    async def _emit_status(
         self,
         message: str,
         trace_id: str | None = None,
@@ -230,314 +114,51 @@ Use tools when you need specific information or actions. When you have enough in
             extra["trace_id"] = trace_id
         logger.info(message, extra=extra)
 
-    def _trim_history(self):
-        """
-        Trims history based on character count.
-        Always preserves the system prompt (index 0).
-        """
-        if len(self.history) <= 1:
-            return
-
-        while True:
-            # Calculate total character count of the history
-            # Handle None content (tool calls have content: None)
-            current_chars = sum(len(m.get("content") or "") for m in self.history)
-
-            # If we are under the limit or only have system prompt left, stop
-            if current_chars <= settings.llm_max_context_chars or len(self.history) <= 2:
-                break
-
-            # Remove the oldest non-system message (index 1)
-            # Index 0 is System, Index 1 is the oldest User/Assistant message
-            self.history.pop(1)
-            # Recalculate after pop for accurate logging
-            current_chars = sum(len(m.get("content") or "") for m in self.history)
-            logger.debug(f"Trimmed context to {current_chars} chars.")
-
-    async def _safe_execute_provider(
-        self, provider, user_input: str, context: MMCPContext
-    ) -> tuple[str, dict[str, Any] | None]:
-        """
-        Safely execute a context provider with timeout and error handling.
-
-        Args:
-            provider: The MMCPContextProvider instance.
-            user_input: The user's query for eligibility checking.
-
-        Returns:
-            Tuple of (provider_key, data_dict or None if failed).
-        """
-        provider_key = provider.context_key
-
-        try:
-            # Check eligibility first (lightweight)
-            if not await provider.is_eligible(user_input):
-                return provider_key, None
-
-            # Check health (circuit breaker)
-            if not self.health.is_available(provider_key):
-                logger.debug(f"Context provider '{provider_key}' is circuit-broken, skipping")
-                return provider_key, None
-
-            # Execute with per-provider timeout using PluginRuntime facade
-            timeout_seconds = settings.context_per_provider_timeout_ms / 1000.0
-            result = await asyncio.wait_for(
-                provider.provide_context(context), timeout=timeout_seconds
-            )
-
-            # Extract data from ContextResponse
-            data = result.data
-            # TTL is available in ContextResponse but not currently used (future enhancement)
-            # Could implement caching based on result.ttl if needed
-
-            # Truncate if needed (Safety Fuse approach)
-            truncated_data = ContextPruner.truncate_provider_data(data, provider_key, settings)
-
-            # Record success
-            self.health.record_success(provider_key)
-
-            return provider_key, truncated_data
-
-        except asyncio.TimeoutError:
-            logger.warning(f"Context provider '{provider_key}' timed out after {timeout_seconds}s")
-            self.health.record_failure(provider_key)
-            return provider_key, None
-
-        except Exception as e:
-            logger.error(
-                f"Context provider '{provider_key}' failed: {e}",
-                exc_info=True,
-            )
-            self.health.record_failure(provider_key)
-            return provider_key, None
-
-    async def assemble_llm_context(self, user_input: str, context: MMCPContext) -> None:
-        """
-        Assemble LLM context by running all eligible context providers in parallel.
-
-        This is the "ReAct preparation phase" - fetches dynamic state before the loop begins.
-        Implements global timeout, per-provider timeouts, and circuit breaker protection.
-
-        Args:
-            user_input: The user's query (for eligibility filtering).
-            context: The MMCPContext to update with provider data.
-        """
-        if not self.loader.context_providers:
-            logger.debug("No context providers registered")
-            return
-
-        # Filter by eligibility and health
-        active_providers = []
-        for provider in self.loader.context_providers.values():
-            # Quick eligibility check (synchronous check first, then async if needed)
-            if not self.health.is_available(provider.context_key):
-                continue
-            active_providers.append(provider)
-
-        if not active_providers:
-            logger.debug("No eligible context providers available")
-            return
-
-        logger.info(
-            f"Assembling context from {len(active_providers)} provider(s) "
-            f"(global timeout: {settings.context_global_timeout_ms}ms)"
-        )
-
-        # Run all providers in parallel with global timeout
-        tasks = [self._safe_execute_provider(p, user_input, context) for p in active_providers]
-
-        try:
-            global_timeout_seconds = settings.context_global_timeout_ms / 1000.0
-            results = await asyncio.wait_for(
-                asyncio.gather(*tasks, return_exceptions=True),
-                timeout=global_timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                f"Context assembly timed out after {global_timeout_seconds}s "
-                f"(global timeout exceeded)"
-            )
-            return
-
-        # Update LLM media state with successful results
-        # Note: _safe_execute_provider wraps all exceptions, so results will be tuples, not Exceptions
-        for result in results:
-            # Defensive check (shouldn't happen, but safe programming)
-            if isinstance(result, Exception):
-                logger.error(f"Context provider raised exception: {result}", exc_info=True)
-                continue
-
-            provider_key, data = result
-            if data is not None:
-                context.llm.media_state[provider_key] = data
-                logger.debug(f"Updated media_state with data from '{provider_key}'")
-            else:
-                logger.debug(f"Provider '{provider_key}' returned no data (skipped or failed)")
-
-    async def _load_session(self, session_id: str) -> None:
-        """
-        Load conversation history from database for session resumption.
-
-        Args:
-            session_id: Session ID to load
-        """
-        async with get_session() as session:
-            stmt = select(ChatSession).where(ChatSession.id == session_id)
-            result = await session.execute(stmt)
-            chat_session = result.scalar_one_or_none()
-
-            if chat_session:
-                # Defensive check: handle None history from database
-                if chat_session.history is not None:
-                    self.history = chat_session.history.copy()
-                else:
-                    self.history = []
-                    logger.warning(f"Session {session_id} had None history, initializing empty")
-                logger.debug(f"Loaded session {session_id} with {len(self.history)} messages")
-            else:
-                # Initialize new session
-                self.history = []
-                logger.debug(f"Initialized new session {session_id}")
-
-    async def _save_session(self, session_id: str) -> None:
-        """
-        Save current conversation history to database.
-
-        Args:
-            session_id: Session ID to save
-        """
-        async with get_session() as session:
-            # Try to update existing session
-            stmt = select(ChatSession).where(ChatSession.id == session_id)
-            result = await session.execute(stmt)
-            chat_session = result.scalar_one_or_none()
-
-            if chat_session:
-                # Update existing
-                chat_session.history = self.history.copy()
-            else:
-                # Create new
-                chat_session = ChatSession(id=session_id, history=self.history.copy())
-                session.add(chat_session)
-
-            await session.commit()
-            logger.debug(f"Saved session {session_id} with {len(self.history)} messages")
-
-    async def safe_tool_call(
-        self, tool, tool_name: str, args: dict, context: MMCPContext
-    ) -> tuple[str, bool]:
-        """
-        Safely execute a tool.
-
-        The response from the LLM is already validated (it's a Pydantic model instance),
-        so we can directly use model_dump() to get the arguments.
-
-        Errors are mapped to ToolError and converted to a simple string that the LLM can process.
-        Full error details are logged with trace_id for correlation.
-
-        Args:
-            tool: The tool instance to execute
-            tool_name: Name of the tool (for error messages)
-            args: Arguments dict (already validated by Pydantic)
-            context: MMCPContext for this execution
-
-        Returns:
-            Tool result as string, or error message if execution failed
-        """
-        try:
-            # Check tool classification for logging (EXTERNAL tools require user approval in chat)
-            if tool.classification == "EXTERNAL":
-                logger.debug(f"Tool '{tool_name}' is EXTERNAL, will require user approval in chat")
-            else:
-                logger.debug(f"Tool '{tool_name}' is INTERNAL, no user approval required")
-
-            # Execute tool with validated arguments
-            # Tool already has paths, system, and settings injected via __init__ (self.paths, self.system, self.settings)
-            result = await asyncio.wait_for(tool.execute(**args), timeout=30.0)
-            return str(result) if result is not None else "Tool executed successfully.", False
-
-        except Exception as e:
-            # Map to ToolError for logging, but return simple string for LLM
-            tool_error = map_tool_error(e, tool_name=tool_name, trace_id=context.runtime.trace_id)
-            logger.error(
-                f"Tool {tool_name} failed (trace_id={context.runtime.trace_id}): {e}",
-                exc_info=True,
-                extra={"trace_id": context.runtime.trace_id, "tool_name": tool_name},
-            )
-            # Track tool failures to detect repeated issues
-            context.increment_tool_failures(tool_name)
-
-            # Return sanitized error message that LLM can understand and act on
-            # Handle specific error types for better user experience
-            if isinstance(e, AttributeError):
-                error_msg = f"Tool '{tool_name}' has a code error. Admin needs to check the logs."
-            elif "401" in str(e):
-                error_msg = f"Tool '{tool_name}' authentication failed. Is the API Key configured?"
-            else:
-                error_msg = f"Tool '{tool_name}' failed: {tool_error.message}. Try a different approach or check if the tool is configured correctly."
-            return error_msg, True
-
     async def resume_action(
         self, approval_id: str, session_id: str, was_approved: bool, trace_id: str | None = None
     ) -> str:
         """
-        Resume a paused conversation by executing or denying an approved external action.
-
-        Args:
-            approval_id: Session-scoped approval identifier
-            session_id: Session ID for conversation context
-            was_approved: Whether the user approved or denied the action
-            trace_id: Optional trace ID for logging
-
-        Returns:
-            The final response after action execution and conversation continuation
+        Resume a paused conversation by approving/denying an external action.
         """
         from app.core.errors import StaleApprovalError
 
-        async with get_session() as session:
-            # Look up the ChatSession
-            stmt = select(ChatSession).where(ChatSession.id == session_id)
-            result = await session.execute(stmt)
-            chat_session = result.scalar_one_or_none()
+        # Use session lock for concurrency control
+        async with self.session_manager.lock_manager.get_lock(session_id):
+            # Load session and validate pending action
+            from app.core.database import get_session
 
-            if not chat_session or not chat_session.pending_action:
-                raise ValueError(f"No pending action found for session {session_id}")
+            async with get_session() as db_session:
+                from app.anp.models import ChatSession
 
-            # Prevent race conditions and stale approvals
-            pending_action = chat_session.pending_action
-            if pending_action.get("approval_id") != approval_id:
-                raise StaleApprovalError()
+                stmt = select(ChatSession).where(ChatSession.id == session_id)
+                result = await db_session.execute(stmt)
+                chat_session = result.scalar_one_or_none()
 
-            # Load session history into orchestrator state
-            self.history = chat_session.history.copy()
+                if not chat_session or not chat_session.pending_action:
+                    raise ValueError(f"No pending action found for session {session_id}")
 
-            # Handle deny path - add rejection message to history
-            if not was_approved:
-                rejection_msg = {
-                    "role": "user",
-                    "content": "I reject this action. Please try something else.",
-                }
-                self.history.append(rejection_msg)
-            else:
-                # Handle approve path - execute tool and add results to history
-                tool_name = pending_action["tool_name"]
-                tool_args = pending_action["tool_args"]
+                if chat_session.pending_action.get("approval_id") != approval_id:
+                    raise StaleApprovalError()
 
-                # Get the tool and execute it
-                tool = self.loader.get_tool(tool_name)
-                if not tool:
-                    raise ValueError(f"Tool '{tool_name}' not found")
+                # Update history based on approval/denial
+                history = chat_session.history.copy()
+                if not was_approved:
+                    history.append(
+                        {
+                            "role": "user",
+                            "content": "I reject this action. Please try something else.",
+                        }
+                    )
+                else:
+                    # Execute approved action
+                    pending_action = chat_session.pending_action
+                    tool_name = pending_action["tool_name"]
+                    tool_args = pending_action["tool_args"]
+                    tool_call_id = f"resumed-{approval_id}"
 
-                # Execute the tool
-                context = MMCPContext(trace_id=trace_id or f"resumed-{approval_id}")
-                context.set_available_tools(self.loader.list_tools())
-
-                result, is_error = await self.safe_tool_call(tool, tool_name, tool_args, context)
-
-                if is_error:
-                    # Feed error back to LLM so it can explain to user
-                    tool_call_id = f"resumed-error-{approval_id}"
-                    self.history.append(
+                    # 1. RECONSTRUCT THE ASSISTANT INTENT
+                    # This tells the LLM: "You previously decided to call this tool"
+                    history.append(
                         {
                             "role": "assistant",
                             "content": None,
@@ -555,40 +176,22 @@ Use tools when you need specific information or actions. When you have enough in
                             ],
                         }
                     )
-                    self.history.append(
-                        {
-                            "role": "tool",
-                            "content": result,
-                            "tool_call_id": tool_call_id,
-                        }
-                    )
-                    # Fall through to resume the conversation with error in history
-                else:
-                    # Add tool execution to history (reconstructs what would be there if tool was called normally)
-                    tool_call_id = f"resumed-{approval_id}"
-                    tool_args_json = (
-                        json.dumps(tool_args) if isinstance(tool_args, dict) else str(tool_args)
+
+                    # 2. EXECUTE AND ADD RESULT
+                    tool = self.loader.get_tool(tool_name)
+                    if not tool:
+                        raise ValueError(f"Tool '{tool_name}' not found")
+
+                    context = MMCPContext(trace_id=trace_id or f"resumed-{approval_id}")
+                    context.set_available_tools(self.loader.list_tools())
+
+                    # Use react loop's safe_tool_call for consistency
+                    # Note: Tool is already approved, so classification logging happens in safe_tool_call
+                    result, _ = await self.react_loop.safe_tool_call(
+                        tool, tool_name, tool_args, context
                     )
 
-                    self.history.append(
-                        {
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": [
-                                {
-                                    "id": tool_call_id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": tool_name,
-                                        "arguments": tool_args_json,
-                                    },
-                                },
-                            ],
-                        }
-                    )
-
-                    # Add the tool result to history with correct tool_call_id
-                    self.history.append(
+                    history.append(
                         {
                             "role": "tool",
                             "content": result,
@@ -596,33 +199,19 @@ Use tools when you need specific information or actions. When you have enough in
                         }
                     )
 
-            # Clear pending action and save updated session
-            chat_session.history = self.history.copy()
-            chat_session.pending_action = None
-            await session.commit()
+                # Clear pending action and save
+                chat_session.history = history.copy()
+                chat_session.pending_action = None
+                await db_session.commit()
 
-            # Continue the ReAct loop using the standard chat method (empty input to resume)
-            return await self.chat("", session_id, trace_id, skip_session_load=True)
-
-    async def _save_session_with_pending_action(
-        self, session_id: str, pending_action: dict
-    ) -> None:
-        """Save session with pending action for HITL."""
-        async with get_session() as session:
-            stmt = select(ChatSession).where(ChatSession.id == session_id)
-            result = await session.execute(stmt)
-            chat_session = result.scalar_one_or_none()
-
-            if chat_session:
-                chat_session.history = self.history.copy()
-                chat_session.pending_action = pending_action
-            else:
-                chat_session = ChatSession(
-                    id=session_id, history=self.history.copy(), pending_action=pending_action
-                )
-                session.add(chat_session)
-
-            await session.commit()
+            # Continue conversation
+            # Recursively call chat with empty input to let LLM process the tool result
+            return await self.chat(
+                user_input="",
+                session_id=session_id,
+                skip_session_load=False,  # Reload the updated history we just committed
+                trace_id=trace_id,
+            )
 
     async def chat(
         self,
@@ -632,382 +221,91 @@ Use tools when you need specific information or actions. When you have enough in
         skip_session_load: bool = False,
     ) -> str | ActionRequestResponse:
         """
-        The main ReAct loop using native tool calling.
+        Main chat entry point. Coordinates session management, context preparation,
+        and delegates to the ReAct loop for processing.
 
-        Processes user input through multiple reasoning steps:
-        1. LLM returns FinalResponse or a tool input schema (Union pattern)
-        2. If tool schema: Execute tool and feed result back
-        3. If FinalResponse: Return to user
-        4. Repeat until FinalResponse or max steps reached
+        TODO(ANP): Internal Turn Detection - ANP Spec Section 6.1
+        Currently, this method doesn't distinguish between regular user-initiated turns
+        and internal turns triggered by ANP notifications (Channel C with Target=AGENT).
+        Internal turns should:
+        1. Be detected when triggered by ANP notifications (Target=AGENT + Handler=AGENT)
+        2. Allow agent to reason autonomously without user-visible output
+        3. Automatically escalate to user-visible delivery when EXTERNAL tools are invoked
+        4. Set FinalResponse.internal_turn=True to mark the turn as internal
 
-        Errors are handled gracefully:
-        - Tool failures are fed back to the LLM so it can adapt
-        - LLM decision failures are retried with error context
-        - Fatal errors (config, auth) are raised as MMCPError
-
-        Args:
-            user_input: The user's message.
-            trace_id: Optional trace ID for log correlation (generated if not provided)
-
-        Returns:
-            The final response message to the user.
-
-        Raises:
-            MMCPError: For fatal errors (configuration, authentication)
+        See: docs/specs/anp-v1.0.md Section 6.1 "The Internal Turn Protection"
         """
-        # Generate trace_id if not provided
-        if trace_id is None:
-            trace_id = str(uuid.uuid4())
+        trace_id = trace_id or str(uuid.uuid4())
 
-        # Load session history if session_id provided (unless skip_session_load is True)
-        if session_id and not skip_session_load:
-            await self._load_session(session_id)
+        # Use session lock if session_id provided
+        session_lock = (
+            self.session_manager.lock_manager.get_lock(session_id) if session_id else asyncio.Lock()
+        )
 
-        # Create MMCP context for this conversation
-        context = MMCPContext(trace_id=trace_id)
+        async with session_lock:
+            # Load session history
+            history = (
+                await self.session_manager.load_session(session_id)
+                if (session_id and not skip_session_load)
+                else []
+            )
 
-        # Populate LLM context with available tools
-        context.set_available_tools(self.loader.list_tools())
+            # Prepare context
+            context = MMCPContext(trace_id=trace_id)
+            context.set_available_tools(self.loader.list_tools())
+            await self.context_manager.assemble_llm_context(user_input, context)
 
-        # Assemble dynamic context from providers (ReAct preparation phase)
-        # This runs on EVERY user message to ensure fresh context is available
-        await self.assemble_llm_context(user_input, context)
-
-        # Acquire agent turn lock for causal serialization of agent actions
-        event_bus = EventBus()
-        agent_turn_lock = event_bus.get_agent_turn_lock()
-        await agent_turn_lock.acquire()
-
-        try:
-            # Store last_turn_time for shared awareness queries
+            # Set last turn time for notifications
             from datetime import datetime
 
             self.notification_injector.set_last_turn_time(datetime.now(timezone.utc))
 
-            # 2. Reconstruct history: PIN system at top, keep ALL other history
-            # We only filter out 'system' to prevent duplicates.
-            # We MUST keep 'user', 'assistant', and 'tool' roles.
-            system_message = {
-                "role": "system",
-                "content": await self._get_system_prompt(context),
-            }
-            messages = [m for m in self.history if m["role"] != "system"]
-            self.history = [system_message] + messages
+            # Global agent turn lock for causal serialization
+            async with self.event_bus.get_agent_turn_lock():
+                # Delegate to ReAct loop with system prompt
+                system_prompt = await self.context_manager.get_system_prompt(context)
 
-            # 3. Add the user's current message (skip if empty for resumption)
-            if user_input.strip():
-                self.history.append({"role": "user", "content": user_input})
+                # UNPACK TUPLE: Result and Updated History
+                result, updated_history = await self.react_loop.execute_turn(
+                    user_input, history, context, system_prompt, self.notification_injector
+                )
 
-            # Build the Union response model: FinalResponse | ToolSchema1 | ToolSchema2 | ...
-            ResponseModel = self._get_response_model()
-
-            # ReAct loop: allow multiple reasoning steps
-            max_steps = 5  # Prevent infinite loops
-            llm_retry_count = 0
-            max_llm_retries = 2  # Allow LLM to self-correct on validation errors
-            rate_limit_retry_count = 0
-            max_rate_limit_retries = 3  # Allow up to 3 retries for rate limits
-
-            for step in range(max_steps):
-                context.increment_step()
-                self._trim_history()
-
-                # 1. Ask the LLM what to do
-                try:
-                    context.increment_llm_call()
-                    response = await get_agent_decision(self.history, response_model=ResponseModel)
-                    llm_retry_count = 0  # Reset retry count on success
-                except Exception as e:
-                    # Map the error
-                    agent_error = map_agent_error(e, trace_id=trace_id)
-
-                    # For validation/parsing errors, feed back to LLM for self-correction
-                    if agent_error.retryable and llm_retry_count < max_llm_retries:
-                        llm_retry_count += 1
-                        logger.warning(
-                            f"LLM validation error (attempt {llm_retry_count}/{max_llm_retries}), "
-                            f"feeding back to LLM for self-correction (trace_id={trace_id})"
+                # Handle Session Persistence
+                if session_id:
+                    if isinstance(result, str):
+                        # Standard response: Save updated history
+                        # Strip the System Prompt (index 0) before saving to DB
+                        db_history = (
+                            updated_history[1:]
+                            if updated_history and updated_history[0]["role"] == "system"
+                            else updated_history
                         )
-                        # Feed error back to LLM so it can correct itself
-                        self.history.append(
-                            {
-                                "role": "assistant",
-                                "content": f"Error: {agent_error.message} Please provide a valid response.",
-                            }
-                        )
-                        continue  # Retry the LLM call
+                        await self.session_manager.save_session(session_id, db_history)
 
-                    # For provider errors, check if they're fatal
-                    provider_error = map_provider_error(e, trace_id=trace_id)
-                    if isinstance(provider_error, MMCPError) and not provider_error.retryable:
-                        # Fatal error (e.g., config issue) - raise it
-                        logger.error(
-                            f"Fatal provider error (trace_id={trace_id}): {e}",
-                            exc_info=True,
-                            extra={"trace_id": trace_id},
-                        )
-                        raise provider_error from e
-
-                    # Special handling for rate limit errors - implement exponential backoff
-                    is_rate_limit = "rate limit" in str(e).lower() or "429" in str(e)
-                    if is_rate_limit and rate_limit_retry_count < max_rate_limit_retries:
-                        rate_limit_retry_count += 1
-                        # Exponential backoff: 1s, 2s, 4s
-                        backoff_seconds = 2 ** (rate_limit_retry_count - 1)
-                        logger.warning(
-                            f"Rate limit hit (attempt {rate_limit_retry_count}/{max_rate_limit_retries}), "
-                            f"backing off for {backoff_seconds}s (trace_id={trace_id})"
-                        )
-                        await asyncio.sleep(backoff_seconds)
-                        continue  # Retry the LLM call after backoff
-
-                    # Non-fatal provider error or max retries reached - return user-friendly message
-                    logger.error(
-                        f"Failed to get agent decision after retries (trace_id={trace_id}): {e}",
-                        exc_info=True,
-                        extra={"trace_id": trace_id},
-                    )
-                    error_message = (
-                        provider_error.message
-                        if isinstance(provider_error, MMCPError)
-                        else agent_error.message
-                    )
-                    return f"I encountered an issue processing your request. Error: {error_message}"
-
-                # 2. Route based on response type using isinstance
-
-                if isinstance(response, FinalResponse):
-                    # Agent wants to respond to user - we're done
-                    self._emit_status(
-                        f"\n[Step {step + 1}] Final Response: {response.answer}",
-                        trace_id,
-                        status_type="thought",
-                    )
-
-                    # Process agent ACKs for asynchronous notifications
-                    if response.acknowledged_ids:
-                        await self.notification_injector.mark_agent_processed(
-                            response.acknowledged_ids
-                        )
-
-                    context.log_inspection()
-                    self.history.append({"role": "assistant", "content": response.answer})
-
-                    # Save session after every FinalResponse (not just HITL interruptions)
-                    if session_id:
-                        await self._save_session(session_id)
-
-                    # Flush system alert queue after agent turn
-                    await event_bus.flush_system_alert_queue()
-
-                    return response.answer
-
-                # It's a tool! Map the schema class to the tool instance
-                tool = self.loader.get_tool_by_schema(type(response))
-                if not tool:
-                    # Tool not found for this schema - this shouldn't happen if mapping is correct
-                    tool_name = type(response).__name__
-                    result = (
-                        f"Error: Tool for schema '{tool_name}' not found. "
-                        f"Available tools: {list(self.loader.list_tools().keys())}"
-                    )
-                    logger.error(
-                        result,
-                        extra={"trace_id": trace_id, "schema_class": tool_name},
-                    )
-                    # Feed error back and continue loop
-                    self.history.append(
-                        {
-                            "role": "tool",
-                            "content": result,
-                            "tool_call_id": f"standby-{tool_name}-{context.runtime.trace_id}",
+                    elif isinstance(result, ActionRequestResponse):
+                        # HITL Request: Save session with pending action
+                        # Construct pending payload
+                        pending_data = {
+                            "approval_id": result.approval_id,
+                            "tool_name": result.tool_name,
+                            "tool_args": result.tool_args,
+                            "context": context.model_dump()
+                            if hasattr(context, "model_dump")
+                            else {},
                         }
-                    )
-                    continue
 
-                # Check if tool is in standby (not fully configured)
-                tool_name = tool.name
-                is_standby = tool_name in self.loader.standby_tools
+                        # Strip system prompt for DB save
+                        db_history = (
+                            updated_history[1:]
+                            if updated_history and updated_history[0]["role"] == "system"
+                            else updated_history
+                        )
 
-                if is_standby:
-                    # Tool is on standby - return user-friendly error with setup instructions
-                    # Get plugin name for error lookup (settings are stored at plugin level)
-                    plugin_name = tool.plugin_name
-                    config_error = self.loader._plugin_config_errors.get(
-                        plugin_name, "Setup required"
-                    )
-                    env_prefix = f"MMCP_PLUGIN_{self.loader._slugify_plugin_name(plugin_name)}_"
-                    result = (
-                        f"Tool '{tool_name}' is on standby. {config_error}. "
-                        f"Set environment variables starting with '{env_prefix}' or configure via the Web UI at /api/v1/settings/plugins/{self.loader._slugify_plugin_name(plugin_name).lower()}."
-                    )
-                    logger.info(
-                        f"Standby tool '{tool_name}' was called (trace_id={trace_id})",
-                        extra={"trace_id": trace_id, "tool_name": tool_name},
-                    )
-                    # Feed error back to LLM so it can inform the user
-                    self.history.append(
-                        {
-                            "role": "tool",
-                            "content": result,
-                            "tool_call_id": f"error-{tool_name}-{context.runtime.trace_id}",
-                        }
-                    )
-                    continue
+                        await self.session_manager.save_session_with_pending_action(
+                            session_id, db_history, pending_data
+                        )
 
-                # Execute the tool with validated arguments (response is already a Pydantic model)
-                # Use mode='json' to ensure SecretStr fields are masked (not stringified as SecretStr('**********'))
-                tool_args = response.model_dump(mode="json")
+                # Flush notification queue
+                await self.event_bus.flush_system_alert_queue()
 
-                # Validate session_id requirement for EXTERNAL tools
-                if tool.classification == "EXTERNAL" and not session_id:
-                    raise MMCPError(
-                        "EXTERNAL tools require an active session_id for HITL processing."
-                    )
-
-                # Check tool classification - EXTERNAL tools require user approval
-                if tool.classification == "EXTERNAL":
-                    logger.debug(f"Tool '{tool_name}' is EXTERNAL, requiring user approval")
-
-                    # Generate approval_id for session-scoped approval
-                    approval_id = str(uuid.uuid4())
-
-                    # Perform contextualization turn to get agent explanation
-                    explanation_prompt = (
-                        "You are about to execute an external tool that requires user approval. "
-                        "You are currently in an interrupted state - the tool has NOT been executed yet. "
-                        "Explain to the user what you are about to do in a friendly, contextual manner. "
-                        "Do not mention the tool name literally - contextualize the action. "
-                        "Make it clear this is an action you want to take with their permission. "
-                        f"You are about to execute: {tool_name} with arguments: {tool_args}"
-                    )
-
-                    context_messages = self.history + [
-                        {"role": "system", "content": explanation_prompt}
-                    ]
-
-                    explanation_response = await self.generate(context_messages, trace_id=trace_id)
-
-                    # Extract the explanation from the agent's response
-                    if hasattr(explanation_response, "answer"):
-                        explanation = explanation_response.answer
-                    else:
-                        explanation = str(explanation_response)
-
-                    # Store pending action in ChatSession for synchronous HITL
-                    pending_data = {
-                        "approval_id": approval_id,
-                        "tool_name": tool_name,
-                        "tool_args": tool_args,
-                        "step": step,
-                        "context": context.model_dump() if hasattr(context, "model_dump") else {},
-                    }
-
-                    # Save to ChatSession with pending action for synchronous HITL
-                    if not session_id:
-                        raise ValueError("EXTERNAL tool requires session_id for HITL approval flow")
-                    await self._save_session_with_pending_action(session_id, pending_data)
-
-                    # Return interruption response
-                    return ActionRequestResponse(
-                        approval_id=approval_id,
-                        explanation=explanation,
-                        tool_name=tool_name,
-                        tool_args=tool_args,
-                    )
-
-                else:
-                    logger.debug(f"Tool '{tool_name}' is INTERNAL, proceeding with execution")
-
-                self._emit_status(
-                    f"[Step {step + 1}] Action: Call tool '{tool_name}' with args {tool_args}",
-                    trace_id,
-                    status_type="tool_start",
-                )
-                context.increment_tool_execution()
-                logger.info(
-                    f"Executing tool: {tool_name} with {tool_args}",
-                    extra={"trace_id": trace_id, "tool_name": tool_name},
-                )
-
-                result, is_error = await self.safe_tool_call(tool, tool_name, tool_args, context)
-                self._emit_status(
-                    f"[Step {step + 1}] Tool result: {result}",
-                    trace_id,
-                    status_type="tool_end",
-                )
-
-                # Check for repeated tool failures - if same tool fails 3+ times, force final response
-                if is_error and context.is_tool_circuit_breaker_tripped(tool_name, threshold=3):
-                    failure_count = context.get_tool_failure_count(tool_name)
-                    msg = f"I encountered a persistent issue with the {tool_name} tool. {result}"
-                    logger.error(
-                        f"Circuit breaker triggered for {tool_name} after {failure_count} failures "
-                        f"(trace_id={trace_id})",
-                        extra={
-                            "trace_id": trace_id,
-                            "tool_name": tool_name,
-                            "failure_count": failure_count,
-                        },
-                    )
-                    # Immediate return - bypasses the rest of the loop and prevents LLM from trying again
-                    context.log_inspection()
-                    # ANP: Flush system alert queue after agent turn
-                    await event_bus.flush_system_alert_queue()
-                    return msg
-
-                # Consistent Tool Result Format: Use role: "tool" instead of "Observation" strings
-                # tool_call_id is either provided by the LLM or generated for internal execution
-                call_id = getattr(response, "id", f"internal-{uuid.uuid4()}")
-
-                # Feed tool result back into history for next iteration
-                self._trim_history()
-                # This allows the LLM to process errors and adapt its strategy
-                self.history.append(
-                    {"role": "tool", "tool_call_id": call_id, "content": str(result)}
-                )
-
-                logger.info(f"Step {step + 1} completed. Tool role result added to history.")
-                # Loop continues so LLM can process the result
-
-            # If we've exhausted max steps, return a message
-            logger.warning(
-                f"ReAct loop exhausted {max_steps} steps without final response (trace_id={trace_id})",
-                extra={"trace_id": trace_id, "max_steps": max_steps},
-            )
-            context.log_inspection()
-            self._emit_status(
-                f"[System] ReAct loop exhausted {max_steps} steps without resolution",
-                trace_id,
-                status_type="info",
-            )
-
-            # Flush system alert queue after agent turn
-            await event_bus.flush_system_alert_queue()
-
-            return "I attempted to solve this but reached my reasoning limit. Please try being more specific or breaking down your request."
-        finally:
-            # Release agent turn lock
-            agent_turn_lock.release()
-
-    async def generate(self, messages, trace_id=None):
-        """Generate text response from LLM."""
-        logger.info(
-            f"Generating LLM response (trace_id={trace_id})",
-            extra={"trace_id": trace_id} if trace_id else {},
-        )
-        response = await acompletion(
-            model=settings.llm_model,
-            messages=messages,
-            **({"api_key": settings.llm_api_key} if settings.llm_api_key else {}),
-            **({"base_url": settings.llm_base_url} if settings.llm_base_url else {}),
-        )
-
-        content = response.choices[0].message.content
-
-        # Return object with answer attribute for compatibility
-        class TextResponse:
-            def __init__(self, answer):
-                self.answer = answer
-
-        return TextResponse(content)
+                return result
