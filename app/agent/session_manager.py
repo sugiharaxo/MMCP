@@ -106,3 +106,6 @@ class SessionManager:
                 session.add(chat_session)
 
             await session.commit()
+            logger.debug(
+                f"Saved session {session_id} with pending action: {pending_action.get('approval_id')}"
+            )

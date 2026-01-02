@@ -76,4 +76,4 @@ class LLMInterface:
             extra={"trace_id": trace_id} if trace_id else {},
         )
 
-        return await get_agent_decision(messages, response_model=response_model)
+        return await get_agent_decision(messages, response_model=response_model, trace_id=trace_id)

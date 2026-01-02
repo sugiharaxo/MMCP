@@ -74,7 +74,11 @@ class ReActLoop:
                 llm_retry_count = 0
             except Exception as e:
                 # Handle errors with retry logic
-                error_handled = await self._handle_llm_error(
+                (
+                    should_retry,
+                    llm_retry_count,
+                    rate_limit_retry_count,
+                ) = await self._handle_llm_error(
                     e,
                     history,
                     context,
@@ -83,9 +87,7 @@ class ReActLoop:
                     max_llm_retries,
                     max_rate_limit_retries,
                 )
-                if error_handled:
-                    llm_retry_count += 1
-                    rate_limit_retry_count += 1
+                if should_retry:
                     continue
                 else:
                     # Return error message
@@ -126,14 +128,14 @@ class ReActLoop:
         rate_limit_retry_count: int,
         max_llm_retries: int,
         max_rate_limit_retries: int,
-    ) -> bool:
-        """Handle LLM errors. Returns True if should retry."""
+    ) -> tuple[bool, int, int]:
+        """Handle LLM errors. Returns (should_retry, updated_llm_count, updated_rate_limit_count)."""
         agent_error = map_agent_error(error, trace_id=context.runtime.trace_id)
 
         # Validation/parsing errors - feed back to LLM for self-correction
         if agent_error.retryable and llm_retry_count < max_llm_retries:
             self.history_manager.add_error_message(history, agent_error.message)
-            return True
+            return True, llm_retry_count + 1, rate_limit_retry_count  # Only increment LLM count
 
         # Provider errors
         provider_error = map_provider_error(error, trace_id=context.runtime.trace_id)
@@ -149,9 +151,13 @@ class ReActLoop:
                 f"backing off for {backoff_seconds}s (trace_id={context.runtime.trace_id})"
             )
             await asyncio.sleep(backoff_seconds)
-            return True
+            return (
+                True,
+                llm_retry_count,
+                rate_limit_retry_count + 1,
+            )  # Only increment Rate Limit count
 
-        return False
+        return False, llm_retry_count, rate_limit_retry_count
 
     async def _handle_final_response(
         self,
@@ -277,7 +283,7 @@ class ReActLoop:
             tool_args=tool_args,
         )
 
-    async def _safe_tool_call(
+    async def safe_tool_call(
         self, tool, tool_name: str, args: dict[str, Any], context: MMCPContext
     ):
         """Safely execute a tool with error handling."""

@@ -44,8 +44,8 @@ class ContextManager:
         # Filter by eligibility and health
         active_providers = []
         for provider in self.loader.context_providers.values():
-            # Quick eligibility check (synchronous check first, then async if needed)
-            if not self.health.is_available(provider.context_key):
+            # If health monitor exists, check it; otherwise, assume available
+            if self.health and not self.health.is_available(provider.context_key):
                 continue
             active_providers.append(provider)
 

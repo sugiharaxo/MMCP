@@ -187,7 +187,7 @@ class AgentOrchestrator:
 
                     # Use react loop's safe_tool_call for consistency
                     # Note: Tool is already approved, so classification logging happens in safe_tool_call
-                    result, _ = await self.react_loop._safe_tool_call(
+                    result, _ = await self.react_loop.safe_tool_call(
                         tool, tool_name, tool_args, context
                     )
 
