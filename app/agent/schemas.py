@@ -38,6 +38,10 @@ class ActionRequestResponse(BaseModel):
     explanation: str = Field(description="Agent's user-friendly explanation")
     tool_name: str = Field(description="Internal tool identifier")
     tool_args: dict = Field(description="Tool arguments for execution")
+    tool_call_id: str | None = Field(
+        default=None,
+        description="Tool call ID from LLM for matching results (DeepSeek 1:1 pairing)",
+    )
 
 
 class AgentTurn(BaseModel):

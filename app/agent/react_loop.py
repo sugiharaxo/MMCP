@@ -83,14 +83,6 @@ class ReActLoop:
                 )
                 llm_retry_count = 0
 
-                # CRITICAL: Add assistant message to history IMMEDIATELY before tool execution
-                # This preserves the tool_calls metadata for Mode.TOOLS compatibility
-                assistant_msg = raw_completion.choices[0].message
-                instructor_mode = get_instructor_mode(settings.llm_model)
-
-                # Use helper method to add LLM message to history
-                self.history_manager.add_llm_message(history, assistant_msg, instructor_mode)
-
             except Exception as e:
                 # Handle errors with retry logic
                 (
@@ -114,23 +106,57 @@ class ReActLoop:
                     return error_msg, history
 
             # Route based on response type (outside try/except)
-            # Extract tool_call_id if in TOOLS mode
-            tool_call_id = None
-            instructor_mode = get_instructor_mode(settings.llm_model)
-            if instructor_mode == instructor.Mode.TOOLS and hasattr(
-                raw_completion.choices[0].message, "tool_calls"
-            ):
-                tool_calls = raw_completion.choices[0].message.tool_calls
-                if tool_calls and len(tool_calls) > 0:
-                    tool_call_id = tool_calls[0].id
-
             if isinstance(response, FinalResponse):
+                # For FinalResponse: Do NOT use add_llm_message (which adds tool_calls metadata)
+                # Instead, _handle_final_response will use add_assistant_response to record
+                # the plain text answer, closing the tool-calling protocol for the next turn.
                 # Generate rich dialogue response using DialogueProfile
                 result = await self._handle_final_response(
                     response, history, context, notification_injector
                 )
                 return result, history
             elif isinstance(response, ReasonedToolCall):
+                # For ReasonedToolCall: Extract tool_call_id and add LLM message to preserve
+                # tool_calls metadata for DeepSeek 1:1 pairing requirement
+                tool_call_id = None
+                instructor_mode = get_instructor_mode(settings.llm_model)
+
+                # CRITICAL: Add assistant message to history IMMEDIATELY before tool execution
+                # This preserves the tool_calls metadata for Mode.TOOLS compatibility
+                assistant_msg = raw_completion.choices[0].message
+                self.history_manager.add_llm_message(history, assistant_msg, instructor_mode)
+
+                # Extract tool_call_id if in TOOLS mode
+                # CRITICAL: Extract from raw_completion.choices[0].message.tool_calls[0].id
+                # for DeepSeek 1:1 pairing requirement
+                # STRICT STATE PERSISTENCE: If TOOLS mode, tool_call_id is mandatory
+                if instructor_mode == instructor.Mode.TOOLS:
+                    # If the LLM failed to give us an ID in TOOLS mode,
+                    # that is a system failure, not a scenario for a fallback.
+                    if not hasattr(raw_completion.choices[0].message, "tool_calls"):
+                        raise MMCPError(
+                            "Protocol Corruption: LLM response missing tool_calls in TOOLS mode",
+                            trace_id=context.runtime.trace_id,
+                        )
+                    tool_calls = raw_completion.choices[0].message.tool_calls
+                    if not tool_calls or len(tool_calls) == 0:
+                        raise MMCPError(
+                            "Protocol Corruption: LLM response has empty tool_calls in TOOLS mode",
+                            trace_id=context.runtime.trace_id,
+                        )
+                    # Extract first tool call ID (handles single tool call case)
+                    # For multiple tool calls, we use the first one to match the primary tool
+                    tool_call_id = tool_calls[0].id
+                    if not tool_call_id:
+                        raise MMCPError(
+                            "Protocol Corruption: tool_call missing ID in TOOLS mode",
+                            trace_id=context.runtime.trace_id,
+                        )
+                    if len(tool_calls) > 1:
+                        logger.debug(
+                            f"Multiple tool calls detected ({len(tool_calls)}), using first ID: {tool_call_id}",
+                            extra={"trace_id": context.runtime.trace_id},
+                        )
                 # Handle reasoned tool call (single-turn atomic consistency)
                 result = await self._handle_reasoned_tool_call(
                     response, history, context, tool_call_id=tool_call_id
@@ -142,6 +168,23 @@ class ReActLoop:
                 # Continue loop with tool result in history
             else:
                 # Fallback: treat as regular tool call (for backward compatibility)
+                # Extract tool_call_id if in TOOLS mode (similar to ReasonedToolCall)
+                tool_call_id = None
+                instructor_mode = get_instructor_mode(settings.llm_model)
+
+                # Add LLM message to preserve tool_calls metadata
+                assistant_msg = raw_completion.choices[0].message
+                self.history_manager.add_llm_message(history, assistant_msg, instructor_mode)
+
+                if (
+                    instructor_mode == instructor.Mode.TOOLS
+                    and hasattr(raw_completion.choices[0].message, "tool_calls")
+                    and raw_completion.choices[0].message.tool_calls
+                ):
+                    tool_calls = raw_completion.choices[0].message.tool_calls
+                    if tool_calls and len(tool_calls) > 0:
+                        tool_call_id = tool_calls[0].id
+
                 result = await self._handle_tool_call(
                     response, history, context, tool_call_id=tool_call_id
                 )
@@ -326,12 +369,21 @@ class ReActLoop:
             #
             # See: docs/specs/anp-v1.0.md Section 6.1 "The Internal Turn Protection"
 
+            # STRICT STATE PERSISTENCE: tool_call_id is mandatory for TOOLS mode
+            instructor_mode_check = get_instructor_mode(settings.llm_model)
+            if instructor_mode_check == instructor.Mode.TOOLS and not tool_call_id:
+                raise MMCPError(
+                    f"Protocol Corruption: Missing tool_call_id for EXTERNAL tool '{tool_name}' in TOOLS mode",
+                    trace_id=context.runtime.trace_id,
+                )
+
             approval_id = str(uuid.uuid4())
             return ActionRequestResponse(
                 approval_id=approval_id,
                 explanation=sanitized_rationale,
                 tool_name=tool_name,
                 tool_args=tool_args,
+                tool_call_id=tool_call_id,
             )
 
         # Execute internal tool
@@ -427,12 +479,21 @@ class ReActLoop:
             explanation = f"I'm requesting to use {tool_name} to proceed with your request."
             sanitized_explanation = sanitize_explanation(explanation)
 
+            # STRICT STATE PERSISTENCE: tool_call_id is mandatory for TOOLS mode
+            instructor_mode = get_instructor_mode(settings.llm_model)
+            if instructor_mode == instructor.Mode.TOOLS and not tool_call_id:
+                raise MMCPError(
+                    f"Protocol Corruption: Missing tool_call_id for EXTERNAL tool '{tool_name}' in TOOLS mode",
+                    trace_id=context.runtime.trace_id,
+                )
+
             approval_id = str(uuid.uuid4())
             return ActionRequestResponse(
                 approval_id=approval_id,
                 explanation=sanitized_explanation,
                 tool_name=tool_name,
                 tool_args=tool_args,
+                tool_call_id=tool_call_id,
             )
 
         # Execute internal tool

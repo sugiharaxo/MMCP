@@ -93,7 +93,14 @@ class HistoryManager:
 
             instructor_mode = get_instructor_mode(settings.llm_model)
 
+        # Sequence sanitization: Ensure valid tool_call_id for Mode.TOOLS
         if instructor_mode == instructor.Mode.TOOLS:
+            if not tool_call_id or not tool_call_id.strip():
+                logger.warning(
+                    "Attempted to add tool result without valid tool_call_id in Mode.TOOLS. "
+                    "Skipping to prevent protocol violation."
+                )
+                return
             # Native tool calling format (OpenAI, Gemini, Claude, DeepSeek)
             history.append({"role": "tool", "tool_call_id": tool_call_id, "content": str(result)})
         else:
@@ -131,29 +138,33 @@ class HistoryManager:
             completion_message: Message object from LLM completion
             instructor_mode: Instructor mode to determine message format
         """
-        assistant_dict = {
-            "role": "assistant",
-            "content": completion_message.content,
-        }
-
         # If using Mode.TOOLS, preserve tool_calls structure
         if (
             instructor_mode == instructor.Mode.TOOLS
             and hasattr(completion_message, "tool_calls")
             and completion_message.tool_calls
         ):
-            assistant_dict["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": tc.type,
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                }
-                for tc in completion_message.tool_calls
-            ]
-            # Set content to None for tool calls (OpenAI format)
-            assistant_dict["content"] = None
+            # DeepSeek requires content to be explicitly None (not missing) for tool_calls
+            assistant_dict = {
+                "role": "assistant",
+                "content": None,  # Explicitly set to None for DeepSeek compatibility
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in completion_message.tool_calls
+                ],
+            }
+        else:
+            # Regular assistant message with content
+            assistant_dict = {
+                "role": "assistant",
+                "content": completion_message.content or "",  # Ensure string, not None
+            }
 
         history.append(assistant_dict)

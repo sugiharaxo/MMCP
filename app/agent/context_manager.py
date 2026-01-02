@@ -26,7 +26,7 @@ class ContextManager:
         self.notification_injector = notification_injector
         self.health = health
 
-    async def assemble_llm_context(self, user_input: str, context: MMCPContext) -> None:
+    async def assemble_llm_context(self, user_input: str | None, context: MMCPContext) -> None:
         """
         Assemble LLM context by running all eligible context providers in parallel.
 
@@ -34,7 +34,7 @@ class ContextManager:
         Implements global timeout, per-provider timeouts, and circuit breaker protection.
 
         Args:
-            user_input: The user's query (for eligibility filtering).
+            user_input: The user's query (for eligibility filtering). Can be None for action resumption.
             context: The MMCPContext to update with provider data.
         """
         if not self.loader.context_providers:
@@ -59,7 +59,9 @@ class ContextManager:
         )
 
         # Run all providers in parallel with global timeout
-        tasks = [self._safe_execute_provider(p, user_input, context) for p in active_providers]
+        # Pass empty string if user_input is None (for action resumption)
+        effective_input = user_input if user_input is not None else ""
+        tasks = [self._safe_execute_provider(p, effective_input, context) for p in active_providers]
 
         try:
             global_timeout_seconds = settings.context_global_timeout_ms / 1000.0
@@ -90,7 +92,7 @@ class ContextManager:
                 logger.debug(f"Provider '{provider_key}' returned no data (skipped or failed)")
 
     async def _safe_execute_provider(
-        self, provider, user_input: str, context: MMCPContext
+        self, provider, user_input: str | None, context: MMCPContext
     ) -> tuple[str, dict[str, Any] | None]:
         """
         Safely execute a context provider with timeout and error handling.
@@ -106,25 +108,27 @@ class ContextManager:
 
         try:
             # Check eligibility first (async)
+            # Handle None user_input gracefully (for action resumption)
+            effective_input = user_input if user_input is not None else ""
             if hasattr(provider, "is_eligible_async"):
                 eligible = await asyncio.wait_for(
-                    provider.is_eligible_async(user_input),
+                    provider.is_eligible_async(effective_input),
                     timeout=settings.context_per_provider_timeout_ms / 1000.0,
                 )
             elif hasattr(provider, "is_eligible"):
                 # Check if it's a coroutine function and await if so
                 if asyncio.iscoroutinefunction(provider.is_eligible):
                     eligible = await asyncio.wait_for(
-                        provider.is_eligible(user_input),
+                        provider.is_eligible(effective_input),
                         timeout=settings.context_per_provider_timeout_ms / 1000.0,
                     )
                 else:
-                    eligible = provider.is_eligible(user_input)
+                    eligible = provider.is_eligible(effective_input)
             else:
                 eligible = True  # Default to eligible if no eligibility check
 
             if not eligible:
-                logger.debug(f"Provider '{provider_key}' not eligible for input: {user_input}")
+                logger.debug(f"Provider '{provider_key}' not eligible for input: {effective_input}")
                 return provider_key, None
 
             # Execute provider with timeout

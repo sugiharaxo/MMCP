@@ -10,6 +10,31 @@ from app.agent.orchestrator import AgentOrchestrator
 from app.agent.schemas import FinalResponse, ReasonedToolCall
 
 
+def create_mock_raw_completion(has_tool_calls: bool = False, tool_call_id: str | None = None):
+    """Create a mock raw completion object with the expected structure."""
+    mock_message = MagicMock()
+    mock_message.content = None if has_tool_calls else "Mock content"
+
+    if has_tool_calls:
+        mock_tool_call = MagicMock()
+        mock_tool_call.id = tool_call_id or "test-tool-call-id"
+        mock_tool_call.type = "function"
+        mock_tool_call.function = MagicMock()
+        mock_tool_call.function.name = "test_tool"
+        mock_tool_call.function.arguments = '{"param": "value"}'
+        mock_message.tool_calls = [mock_tool_call]
+    else:
+        mock_message.tool_calls = None
+
+    mock_choice = MagicMock()
+    mock_choice.message = mock_message
+
+    mock_completion = MagicMock()
+    mock_completion.choices = [mock_choice]
+
+    return mock_completion
+
+
 @pytest.fixture
 def mock_loader():
     """Create a mock plugin loader."""
@@ -37,6 +62,7 @@ def orchestrator(mock_loader):
 async def test_chat_final_response(orchestrator: AgentOrchestrator):
     """Test that chat returns a final response when LLM provides one."""
     response = FinalResponse(thought="I can answer this", answer="Test response")
+    raw_completion = create_mock_raw_completion(has_tool_calls=False)
 
     # Mock the LLM interface methods
     with (
@@ -48,7 +74,7 @@ async def test_chat_final_response(orchestrator: AgentOrchestrator):
             new_callable=AsyncMock,
         ) as mock_dialogue,
     ):
-        mock_reasoned.return_value = response
+        mock_reasoned.return_value = (response, raw_completion)
         mock_dialogue.return_value = "Test response"
 
         result = await orchestrator.chat("Test message")
@@ -94,9 +120,13 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return reasoned_tool_call
+            raw_completion = create_mock_raw_completion(
+                has_tool_calls=True, tool_call_id="test-tool-call-1"
+            )
+            return (reasoned_tool_call, raw_completion)
         else:
-            return final_response
+            raw_completion = create_mock_raw_completion(has_tool_calls=False)
+            return (final_response, raw_completion)
 
     with (
         patch(
@@ -137,9 +167,13 @@ async def test_chat_tool_not_found(orchestrator: AgentOrchestrator):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return reasoned_tool_call
+            raw_completion = create_mock_raw_completion(
+                has_tool_calls=True, tool_call_id="test-tool-call-1"
+            )
+            return (reasoned_tool_call, raw_completion)
         else:
-            return final_response
+            raw_completion = create_mock_raw_completion(has_tool_calls=False)
+            return (final_response, raw_completion)
 
     with (
         patch(
@@ -174,7 +208,10 @@ async def test_chat_max_steps(orchestrator: AgentOrchestrator):
     with patch(
         "app.agent.llm_interface.LLMInterface.get_reasoned_decision", new_callable=AsyncMock
     ) as mock_llm:
-        mock_llm.return_value = reasoned_tool_call  # Always return tool call
+        raw_completion = create_mock_raw_completion(
+            has_tool_calls=True, tool_call_id="test-tool-call-1"
+        )
+        mock_llm.return_value = (reasoned_tool_call, raw_completion)  # Always return tool call
 
         result = await orchestrator.chat("Test message")
 
