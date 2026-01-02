@@ -556,39 +556,39 @@ Use tools when you need specific information or actions. When you have enough in
                         "content": result,
                         "tool_call_id": tool_call_id,
                     })
-                    # Continue to resumption (skip the else block below)
+                    # Fall through to resume the conversation with error in history
+                else:
+                    # Add tool execution to history (reconstructs what would be there if tool was called normally)
+                    tool_call_id = f"resumed-{approval_id}"
+                    tool_args_json = (
+                        json.dumps(tool_args) if isinstance(tool_args, dict) else str(tool_args)
+                    )
 
-                # Add tool execution to history (reconstructs what would be there if tool was called normally)
-                tool_call_id = f"resumed-{approval_id}"
-                tool_args_json = (
-                    json.dumps(tool_args) if isinstance(tool_args, dict) else str(tool_args)
-                )
-
-                self.history.append(
-                    {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [
-                            {
-                                "id": tool_call_id,
-                                "type": "function",
-                                "function": {
-                                    "name": tool_name,
-                                    "arguments": tool_args_json,
+                    self.history.append(
+                        {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": tool_call_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tool_name,
+                                        "arguments": tool_args_json,
+                                    },
                                 },
-                            },
-                        ],
-                    }
-                )
+                            ],
+                        }
+                    )
 
-                # Add the tool result to history with correct tool_call_id
-                self.history.append(
-                    {
-                        "role": "tool",
-                        "content": result,
-                        "tool_call_id": tool_call_id,
-                    }
-                )
+                    # Add the tool result to history with correct tool_call_id
+                    self.history.append(
+                        {
+                            "role": "tool",
+                            "content": result,
+                            "tool_call_id": tool_call_id,
+                        }
+                    )
 
             # Clear pending action and save updated session
             chat_session.history = self.history.copy()
