@@ -72,7 +72,7 @@ async def list_sessions():
     # For now, we can't easily track creation timestamps for existing sessions
     # In a real implementation, sessions would be stored in the database
     # For this MVP, we'll return session IDs without timestamps
-    active_sessions = list(session_manager.active_sessions.keys())
+    active_sessions = list(session_manager.active_sessions)
 
     from datetime import datetime
     return [
