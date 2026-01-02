@@ -224,7 +224,7 @@ class ReActLoop:
             await self.status_callback(
                 f"Executing tool: {tool_name}", context.runtime.trace_id, "tool_start"
             )
-        result, is_error = await self._safe_tool_call(tool, tool_name, tool_args, context)
+        result, is_error = await self.safe_tool_call(tool, tool_name, tool_args, context)
         if self.status_callback:
             await self.status_callback(
                 f"Completed tool: {tool_name}", context.runtime.trace_id, "tool_end"
