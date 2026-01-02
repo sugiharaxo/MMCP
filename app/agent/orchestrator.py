@@ -1,6 +1,7 @@
 """Agent Orchestrator - manages the ReAct loop and conversation context."""
 
 import asyncio
+import json
 import uuid
 from datetime import timezone
 from functools import reduce
@@ -13,11 +14,10 @@ from sqlalchemy import select
 
 from app.agent.schemas import ActionRequestResponse, FinalResponse
 
-# ANP imports
+# ANP imports (ChatSession and EventBus still needed for agent turn lock)
 from app.anp.agent_integration import AgentNotificationInjector
 from app.anp.event_bus import EventBus
-from app.anp.models import ChatSession, EventLedger
-from app.anp.schemas import NotificationCreate, RoutingFlags
+from app.anp.models import ChatSession
 from app.core.config import settings
 from app.core.context import MMCPContext
 from app.core.database import get_session
@@ -54,7 +54,7 @@ class AgentOrchestrator:
         self.loader = loader
         self.history: list[dict] = []
         self.health = health or HealthMonitor()
-        # ANP integration
+        # ANP integration (still needed for notifications)
         self.event_bus = EventBus()
         self.notification_injector = AgentNotificationInjector(self.event_bus)
         self._internal_turn = False
@@ -69,7 +69,7 @@ class AgentOrchestrator:
         Injects dynamic state from context (user preferences, media state) to make
         the LLM aware of current server state.
 
-        Also injects ANP notifications (pending + recent user ACKs) for shared awareness.
+        Also injects relevant context for agent awareness.
         """
         if not self.loader:
             tool_desc = "No tools are currently available."
@@ -127,7 +127,7 @@ class AgentOrchestrator:
         # Add standby alerts for system awareness
         standby_alerts = self._get_standby_alerts()
 
-        # ANP: Inject notifications (pending + recent user ACKs)
+        # Inject notifications (pending + recent user ACKs)
         user_id = "default"  # Single-user system for now
         pending = await self.notification_injector.get_pending_notifications(user_id)
         recent_acks = await self.notification_injector.get_recent_user_acks(user_id)
@@ -240,7 +240,8 @@ Use tools when you need specific information or actions. When you have enough in
 
         while True:
             # Calculate total character count of the history
-            current_chars = sum(len(m.get("content", "")) for m in self.history)
+            # Handle None content (tool calls have content: None)
+            current_chars = sum(len(m.get("content") or "") for m in self.history)
 
             # If we are under the limit or only have system prompt left, stop
             if current_chars <= settings.llm_max_context_chars or len(self.history) <= 2:
@@ -250,7 +251,7 @@ Use tools when you need specific information or actions. When you have enough in
             # Index 0 is System, Index 1 is the oldest User/Assistant message
             self.history.pop(1)
             # Recalculate after pop for accurate logging
-            current_chars = sum(len(m.get("content", "")) for m in self.history)
+            current_chars = sum(len(m.get("content") or "") for m in self.history)
             logger.debug(f"Trimmed context to {current_chars} chars.")
 
     async def _safe_execute_provider(
@@ -384,7 +385,12 @@ Use tools when you need specific information or actions. When you have enough in
             chat_session = result.scalar_one_or_none()
 
             if chat_session:
-                self.history = chat_session.history.copy()
+                # Defensive check: handle None history from database
+                if chat_session.history is not None:
+                    self.history = chat_session.history.copy()
+                else:
+                    self.history = []
+                    logger.warning(f"Session {session_id} had None history, initializing empty")
                 logger.debug(f"Loaded session {session_id} with {len(self.history)} messages")
             else:
                 # Initialize new session
@@ -472,66 +478,131 @@ Use tools when you need specific information or actions. When you have enough in
             return error_msg, True
 
     async def resume_action(
-        self, event_id: str, session_id: str | None = None, trace_id: str | None = None
+        self, approval_id: str, session_id: str, was_approved: bool, trace_id: str | None = None
     ) -> str:
         """
-        Resume a paused conversation by executing an approved external action.
+        Resume a paused conversation by executing or denying an approved external action.
 
         Args:
-            event_id: The ANP event ID containing the pending action
-            session_id: Optional session ID for conversation context
+            approval_id: Session-scoped approval identifier
+            session_id: Session ID for conversation context
+            was_approved: Whether the user approved or denied the action
             trace_id: Optional trace ID for logging
 
         Returns:
             The final response after action execution and conversation continuation
         """
+        from app.core.errors import StaleApprovalError
+
         async with get_session() as session:
-            # Look up the ANP event
-            stmt = select(EventLedger).where(EventLedger.id == event_id)
+            # Look up the ChatSession
+            stmt = select(ChatSession).where(ChatSession.id == session_id)
             result = await session.execute(stmt)
-            event = result.scalar_one_or_none()
+            chat_session = result.scalar_one_or_none()
 
-            if not event or not event.pending_action_data:
-                raise ValueError(f"No pending action found for event {event_id}")
+            if not chat_session or not chat_session.pending_action:
+                raise ValueError(f"No pending action found for session {session_id}")
 
-            # Extract pending action data
-            pending_data = event.pending_action_data
-            tool_name = pending_data["tool_name"]
-            tool_args = pending_data["tool_args"]
+            # Prevent race conditions and stale approvals
+            pending_action = chat_session.pending_action
+            if pending_action.get("approval_id") != approval_id:
+                raise StaleApprovalError()
 
-            # Load session context if provided
-            if session_id:
-                await self._load_session(session_id)
+            # Load session history into orchestrator state
+            self.history = chat_session.history.copy()
 
-            # Get the tool and execute it
-            tool = self.loader.get_tool(tool_name)
-            if not tool:
-                raise ValueError(f"Tool '{tool_name}' not found")
-
-            # Execute the tool
-            context = MMCPContext(trace_id=trace_id or f"resumed-{event_id}")
-            context.set_available_tools(self.loader.list_tools())
-
-            result, is_error = await self.safe_tool_call(tool, tool_name, tool_args, context)
-
-            if is_error:
-                raise RuntimeError(f"Tool execution failed: {result}")
-
-            # Continue the agent reasoning loop with the tool result
-            # Add the tool result to history with correct tool_call_id
-            self.history.append(
-                {
-                    "role": "tool",
-                    "content": result,
-                    "tool_call_id": f"resumed-{event_id}",
+            # Handle deny path - add rejection message to history
+            if not was_approved:
+                rejection_msg = {
+                    "role": "user",
+                    "content": "I reject this action. Please try something else.",
                 }
-            )
+                self.history.append(rejection_msg)
+            else:
+                # Handle approve path - execute tool and add results to history
+                tool_name = pending_action["tool_name"]
+                tool_args = pending_action["tool_args"]
 
-            # Continue the ReAct loop (empty input to resume)
-            return await self.chat("", session_id, trace_id)
+                # Get the tool and execute it
+                tool = self.loader.get_tool(tool_name)
+                if not tool:
+                    raise ValueError(f"Tool '{tool_name}' not found")
+
+                # Execute the tool
+                context = MMCPContext(trace_id=trace_id or f"resumed-{approval_id}")
+                context.set_available_tools(self.loader.list_tools())
+
+                result, is_error = await self.safe_tool_call(tool, tool_name, tool_args, context)
+
+                if is_error:
+                    raise RuntimeError(f"Tool execution failed: {result}")
+
+                # Add tool execution to history (reconstructs what would be there if tool was called normally)
+                tool_call_id = f"resumed-{approval_id}"
+                tool_args_json = (
+                    json.dumps(tool_args) if isinstance(tool_args, dict) else str(tool_args)
+                )
+
+                self.history.append(
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": tool_call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": tool_args_json,
+                                },
+                            },
+                        ],
+                    }
+                )
+
+                # Add the tool result to history with correct tool_call_id
+                self.history.append(
+                    {
+                        "role": "tool",
+                        "content": result,
+                        "tool_call_id": tool_call_id,
+                    }
+                )
+
+            # Clear pending action and save updated session
+            chat_session.history = self.history.copy()
+            chat_session.pending_action = None
+            await session.commit()
+
+            # Continue the ReAct loop using the standard chat method (empty input to resume)
+            return await self.chat("", session_id, trace_id, skip_session_load=True)
+
+    async def _save_session_with_pending_action(
+        self, session_id: str, pending_action: dict
+    ) -> None:
+        """Save session with pending action for HITL."""
+        async with get_session() as session:
+            stmt = select(ChatSession).where(ChatSession.id == session_id)
+            result = await session.execute(stmt)
+            chat_session = result.scalar_one_or_none()
+
+            if chat_session:
+                chat_session.history = self.history.copy()
+                chat_session.pending_action = pending_action
+            else:
+                chat_session = ChatSession(
+                    id=session_id, history=self.history.copy(), pending_action=pending_action
+                )
+                session.add(chat_session)
+
+            await session.commit()
 
     async def chat(
-        self, user_input: str, session_id: str | None = None, trace_id: str | None = None
+        self,
+        user_input: str,
+        session_id: str | None = None,
+        trace_id: str | None = None,
+        skip_session_load: bool = False,
     ) -> str | ActionRequestResponse:
         """
         The main ReAct loop using native tool calling.
@@ -561,8 +632,8 @@ Use tools when you need specific information or actions. When you have enough in
         if trace_id is None:
             trace_id = str(uuid.uuid4())
 
-        # Load session history if session_id provided
-        if session_id:
+        # Load session history if session_id provided (unless skip_session_load is True)
+        if session_id and not skip_session_load:
             await self._load_session(session_id)
 
         # Create MMCP context for this conversation
@@ -575,7 +646,7 @@ Use tools when you need specific information or actions. When you have enough in
         # This runs on EVERY user message to ensure fresh context is available
         await self.assemble_llm_context(user_input, context)
 
-        # ANP: Acquire agent turn lock for causal serialization
+        # Acquire agent turn lock for causal serialization
         event_bus = EventBus()
         agent_turn_lock = event_bus.get_agent_turn_lock()
         await agent_turn_lock.acquire()
@@ -695,6 +766,10 @@ Use tools when you need specific information or actions. When you have enough in
                     context.log_inspection()
                     self.history.append({"role": "assistant", "content": response.answer})
 
+                    # Save session after every FinalResponse (not just HITL interruptions)
+                    if session_id:
+                        await self._save_session(session_id)
+
                     # ANP: Flush system alert queue after agent turn
                     await event_bus.flush_system_alert_queue()
 
@@ -757,28 +832,12 @@ Use tools when you need specific information or actions. When you have enough in
                 # Use mode='json' to ensure SecretStr fields are masked (not stringified as SecretStr('**********'))
                 tool_args = response.model_dump(mode="json")
 
-                # ANP: Check tool classification - EXTERNAL tools require user approval
+                # Check tool classification - EXTERNAL tools require user approval
                 if tool.classification == "EXTERNAL":
                     logger.debug(f"Tool '{tool_name}' is EXTERNAL, requiring user approval")
 
-                    # Create ANP event for this action request
-                    event_id = await self.notification_injector.event_bus.emit_notification(
-                        NotificationCreate(
-                            content=f"Agent requests approval to execute: {tool_name}",
-                            routing=RoutingFlags(
-                                address="session" if session_id else "user",
-                                target="user",
-                                handler="system",
-                            ),
-                            user_id="default",  # Single-user for now
-                            session_id=session_id,
-                            metadata={
-                                "tool_name": tool_name,
-                                "tool_args": tool_args,
-                                "requires_approval": True,
-                            },
-                        )
-                    )
+                    # Generate approval_id for session-scoped approval
+                    approval_id = str(uuid.uuid4())
 
                     # Perform contextualization turn to get agent explanation
                     explanation_prompt = (
@@ -802,29 +861,22 @@ Use tools when you need specific information or actions. When you have enough in
                     else:
                         explanation = str(explanation_response)
 
-                    # Save current state with pending action
+                    # Store pending action in ChatSession instead of ANP event
                     pending_data = {
+                        "approval_id": approval_id,
                         "tool_name": tool_name,
                         "tool_args": tool_args,
                         "step": step,
                         "context": context.model_dump() if hasattr(context, "model_dump") else {},
                     }
 
-                    # Update the ANP event with pending action data
-                    async with get_session() as db_session:
-                        stmt = select(EventLedger).where(EventLedger.id == event_id)
-                        result = await db_session.execute(stmt)
-                        event = result.scalar_one()
-                        event.pending_action_data = pending_data
-                        await db_session.commit()
-
-                    # Save session state
+                    # Save to ChatSession with pending action
                     if session_id:
-                        await self._save_session(session_id)
+                        await self._save_session_with_pending_action(session_id, pending_data)
 
                     # Return interruption response
                     return ActionRequestResponse(
-                        event_id=event_id,
+                        approval_id=approval_id,
                         explanation=explanation,
                         tool_name=tool_name,
                         tool_args=tool_args,
@@ -915,9 +967,11 @@ Use tools when you need specific information or actions. When you have enough in
             **({"base_url": settings.llm_base_url} if settings.llm_base_url else {}),
         )
 
+        content = response.choices[0].message.content
+
         # Return object with answer attribute for compatibility
         class TextResponse:
             def __init__(self, answer):
                 self.answer = answer
 
-        return TextResponse(response.choices[0].message.content)
+        return TextResponse(content)

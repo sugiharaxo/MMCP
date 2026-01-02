@@ -20,7 +20,7 @@ class ActionRequestResponse(BaseModel):
     """Response when agent needs user approval for external action."""
 
     type: Literal["action_request"] = "action_request"
-    event_id: str = Field(description="ANP event ID for this action")
+    approval_id: str = Field(description="Session-scoped approval identifier")
     explanation: str = Field(description="Agent's user-friendly explanation")
     tool_name: str = Field(description="Internal tool identifier")
     tool_args: dict = Field(description="Tool arguments for execution")
