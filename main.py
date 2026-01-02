@@ -12,7 +12,6 @@ from app.agent.orchestrator import AgentOrchestrator
 from app.anp.event_bus import EventBus
 from app.anp.notification_dispatcher import NotificationDispatcher
 from app.anp.watchdog import WatchdogService
-from app.api.routes import chat as chat_routes
 from app.api.routes import notifications as notifications_routes
 from app.api.routes import settings as settings_routes
 from app.core.auth import ensure_admin_token
@@ -190,7 +189,6 @@ async def general_exception_handler(_request: Request, exc: Exception) -> JSONRe
 
 # --- API Endpoints ---
 
-app.include_router(chat_routes.router)
 app.include_router(settings_routes.router)
 app.include_router(notifications_routes.router)
 
