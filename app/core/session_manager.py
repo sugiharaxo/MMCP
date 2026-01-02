@@ -1,7 +1,9 @@
 """
-Session Manager for ANP.
+Session Manager - MMCP Core Infrastructure.
 
-Simple session tracking with expiration and user_id management.
+Session tracking infrastructure that supports ANP protocol by providing
+session lifecycle management and validation. Not part of ANP spec itself,
+but enables ANP's Address=SESSION functionality.
 """
 
 from datetime import datetime, timedelta
@@ -13,9 +15,12 @@ from app.core.logger import logger
 
 class SessionManager:
     """
-    Simple session tracking for ANP.
+    Session tracking infrastructure for MMCP.
 
-    Tracks active sessions and their last activity timestamps.
+    Provides session lifecycle management to support ANP's Address=SESSION
+    functionality. Tracks active sessions and their last activity timestamps
+    to enable session expiration promotion in the ANP protocol.
+
     For now, single-user system (user_id = "default").
     Future: Extend to multi-user when auth is added.
     """

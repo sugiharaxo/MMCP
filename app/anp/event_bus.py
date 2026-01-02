@@ -18,7 +18,7 @@ from app.core.database import get_session
 from app.core.logger import logger
 
 if TYPE_CHECKING:
-    from app.anp.session_manager import SessionManager
+    from app.core.session_manager import SessionManager
 
 # Default TTL for Channel C events (5 minutes)
 DEFAULT_TTL_SECONDS = 300
