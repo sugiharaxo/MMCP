@@ -129,7 +129,7 @@ class ContextManager:
 
             # Execute provider with timeout
             result = await asyncio.wait_for(
-                provider.provide_context(context),
+                provider.provide_context(),
                 timeout=settings.context_per_provider_timeout_ms / 1000.0,
             )
 
