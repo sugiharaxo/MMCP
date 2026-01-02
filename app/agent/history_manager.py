@@ -1,0 +1,81 @@
+"""History Management - handles conversation history operations."""
+
+from typing import Any
+
+from app.core.config import settings
+from app.core.logger import logger
+
+
+class HistoryManager:
+    """Manages conversation history operations."""
+
+    def trim_history(self, history: list[dict[str, Any]]) -> None:
+        """
+        Trims history based on character count.
+        Always preserves the system prompt (index 0).
+
+        Args:
+            history: The history list to trim (modified in-place)
+        """
+        if len(history) <= 1:
+            return
+
+        while True:
+            # Calculate total character count of the history
+            # Handle None content (tool calls have content: None)
+            current_chars = sum(len(m.get("content") or "") for m in history)
+
+            # If we are under the limit or only have system prompt left, stop
+            if current_chars <= settings.llm_max_context_chars or len(history) <= 2:
+                break
+
+            # Remove the oldest non-system message (index 1)
+            # Index 0 is System, Index 1 is the oldest User/Assistant message
+            history.pop(1)
+            # Recalculate after pop for accurate logging
+            current_chars = sum(len(m.get("content") or "") for m in history)
+            logger.debug(f"Trimmed context to {current_chars} chars.")
+
+    def reconstruct_history(
+        self, base_history: list[dict[str, Any]], system_prompt: str, user_input: str | None = None
+    ) -> list[dict[str, Any]]:
+        """
+        Reconstruct conversation history for LLM consumption.
+
+        Args:
+            base_history: The base conversation history
+            system_prompt: System prompt to prepend
+            user_input: Optional user input to append
+
+        Returns:
+            Reconstructed history ready for LLM
+        """
+        # PIN system at top, keep ALL other history
+        system_message = {"role": "system", "content": system_prompt}
+        messages = [m for m in base_history if m["role"] != "system"]
+        history = [system_message] + messages
+
+        # Add user input if provided
+        if user_input and user_input.strip():
+            history.append({"role": "user", "content": user_input})
+
+        return history
+
+    def add_assistant_response(self, history: list[dict[str, Any]], content: str) -> None:
+        """Add assistant response to history."""
+        history.append({"role": "assistant", "content": content})
+
+    def add_tool_result(
+        self, history: list[dict[str, Any]], tool_call_id: str, result: str
+    ) -> None:
+        """Add tool execution result to history."""
+        history.append({"role": "tool", "tool_call_id": tool_call_id, "content": str(result)})
+
+    def add_error_message(self, history: list[dict[str, Any]], error_message: str) -> None:
+        """Add error message to history for LLM correction."""
+        history.append(
+            {
+                "role": "assistant",
+                "content": f"Error: {error_message} Please provide a valid response.",
+            }
+        )

@@ -130,7 +130,7 @@ class TestContextAssembly:
         orchestrator = AgentOrchestrator(loader, health_monitor)
 
         # Override global timeout to 1ms
-        with patch("app.agent.orchestrator.settings") as mock_settings:
+        with patch("app.core.config.settings") as mock_settings:
             mock_settings.context_global_timeout_ms = 1
             mock_settings.context_per_provider_timeout_ms = 300
             mock_settings.context_max_chars_per_provider = 2000
@@ -142,7 +142,7 @@ class TestContextAssembly:
             context.llm.media_state = {}
 
             # Should complete without error (timeout handled gracefully)
-            await orchestrator.assemble_llm_context("test query", context)
+            await orchestrator.context_manager.assemble_llm_context("test query", context)
 
             # Media state should be empty (provider timed out)
             assert len(context.llm.media_state) == 0
@@ -159,7 +159,7 @@ class TestContextAssembly:
         orchestrator = AgentOrchestrator(loader)
 
         # Set per-provider timeout to 100ms (provider takes 1s)
-        with patch("app.agent.orchestrator.settings") as mock_settings:
+        with patch("app.core.config.settings") as mock_settings:
             mock_settings.context_global_timeout_ms = 800
             mock_settings.context_per_provider_timeout_ms = 100
             mock_settings.context_max_chars_per_provider = 2000
@@ -170,7 +170,7 @@ class TestContextAssembly:
             context.llm = MagicMock()
             context.llm.media_state = {}
 
-            await orchestrator.assemble_llm_context("test query", context)
+            await orchestrator.context_manager.assemble_llm_context("test query", context)
 
             # Provider should timeout, no data added
             assert len(context.llm.media_state) == 0
@@ -193,14 +193,14 @@ class TestContextAssembly:
 
         # First 3 failures should be recorded
         for _ in range(settings.context_failure_threshold):
-            await orchestrator.assemble_llm_context("test query", context)
+            await orchestrator.context_manager.assemble_llm_context("test query", context)
             assert len(context.llm.media_state) == 0  # No data due to failure
 
         # After threshold, provider should be circuit-broken
         assert not orchestrator.health.is_available("failing_provider")
 
         # Next call should skip the provider (circuit broken)
-        await orchestrator.assemble_llm_context("test query", context)
+        await orchestrator.context_manager.assemble_llm_context("test query", context)
         # Provider should not be called (circuit broken)
 
     @pytest.mark.asyncio
@@ -232,7 +232,7 @@ class TestContextAssembly:
         health_monitor = HealthMonitor()
         orchestrator = AgentOrchestrator(loader, health_monitor)
 
-        with patch("app.agent.orchestrator.settings") as mock_settings:
+        with patch("app.core.config.settings") as mock_settings:
             mock_settings.context_global_timeout_ms = 800
             mock_settings.context_per_provider_timeout_ms = 300
             mock_settings.context_max_chars_per_provider = 2000  # Limit to 2000 chars
@@ -243,7 +243,7 @@ class TestContextAssembly:
             context.llm = MagicMock()
             context.llm.media_state = {}
 
-            await orchestrator.assemble_llm_context("test query", context)
+            await orchestrator.context_manager.assemble_llm_context("test query", context)
 
             # Data should be truncated
             if "large_provider" in context.llm.media_state:
@@ -273,7 +273,7 @@ class TestContextAssembly:
         context.llm.media_state = {}
 
         start_time = asyncio.get_event_loop().time()
-        await orchestrator.assemble_llm_context("test query", context)
+        await orchestrator.context_manager.assemble_llm_context("test query", context)
         elapsed = asyncio.get_event_loop().time() - start_time
 
         # If parallel, should take ~0.1s, not ~0.3s
@@ -301,7 +301,7 @@ class TestContextAssembly:
         context.llm.media_state = {}
 
         # Query with "skip" should filter out providers
-        await orchestrator.assemble_llm_context("skip this", context)
+        await orchestrator.context_manager.assemble_llm_context("skip this", context)
 
         # No providers should execute (all filtered by eligibility)
         assert len(context.llm.media_state) == 0
