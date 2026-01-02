@@ -183,7 +183,7 @@ class AGUI {
         <div class="space-y-3">
             <div class="bg-red-50 border border-red-200 rounded p-3">
                 <h4 class="font-semibold text-red-800 mb-2">Agent Explanation:</h4>
-                <p class="text-red-700">${data.explanation}</p>
+                <p class="text-red-700" id="explanation-text"></p>
             </div>
 
             <div class="bg-gray-50 border rounded p-3">
