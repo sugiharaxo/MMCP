@@ -128,16 +128,17 @@ class AgentOrchestrator:
 
                     # STRICT STATE PERSISTENCE: Extract exactly what the LLM gave us
                     # No fallbacks, no magic strings - fail loudly if data is missing
-                    tool_call_id = pending_action.get("tool_call_id")
-
-                    if instructor_mode == instructor.Mode.TOOLS and not tool_call_id:
-                        # This should never happen in a healthy system
-                        raise MMCPError(
-                            "Protocol Corruption: Missing tool_call_id for resumed action in TOOLS mode. "
-                            "This indicates state persistence failure.",
-                            trace_id=trace_id,
-                        )
-                    elif instructor_mode != instructor.Mode.TOOLS:
+                    # Mode-aware extraction: Only extract tool_call_id for TOOLS mode
+                    if instructor_mode == instructor.Mode.TOOLS:
+                        tool_call_id = pending_action.get("tool_call_id")
+                        if not tool_call_id:
+                            # This should never happen in a healthy system
+                            raise MMCPError(
+                                "Protocol Corruption: Missing tool_call_id for resumed action in TOOLS mode. "
+                                "This indicates state persistence failure.",
+                                trace_id=trace_id,
+                            )
+                    else:
                         # Mode.JSON: tool_call_id should be None (uses user role with OBSERVATION)
                         tool_call_id = None
 
@@ -162,17 +163,13 @@ class AgentOrchestrator:
                                 for tc in tool_calls:
                                     if tc.get("function", {}).get("name") == tool_name:
                                         if tc.get("id") != tool_call_id:
-                                            logger.error(
-                                                f"State Mismatch: History tool_call_id ({tc.get('id')}) "
+                                            # State mismatch indicates protocol violation - fail loudly
+                                            raise MMCPError(
+                                                f"Protocol Corruption: History tool_call_id ({tc.get('id')}) "
                                                 f"does not match persisted ID ({tool_call_id}). "
-                                                f"This indicates a state corruption issue.",
-                                                extra={
-                                                    "trace_id": trace_id,
-                                                    "approval_id": approval_id,
-                                                },
+                                                f"This indicates state corruption and cannot be safely recovered.",
+                                                trace_id=trace_id,
                                             )
-                                            # Last-resort safety: force match (but log the corruption)
-                                            tc["id"] = tool_call_id
                                         break
                         else:
                             # Mode.JSON: Check if content matches

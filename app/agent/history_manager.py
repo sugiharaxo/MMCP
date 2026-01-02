@@ -70,7 +70,7 @@ class HistoryManager:
     def add_tool_result(
         self,
         history: list[dict[str, Any]],
-        tool_call_id: str,
+        tool_call_id: str | None,
         result: str,
         instructor_mode: instructor.Mode | None = None,
     ) -> None:
@@ -95,7 +95,8 @@ class HistoryManager:
 
         # Sequence sanitization: Ensure valid tool_call_id for Mode.TOOLS
         if instructor_mode == instructor.Mode.TOOLS:
-            if not tool_call_id or not tool_call_id.strip():
+            # Check for None first, then validate string is not empty
+            if not tool_call_id or (isinstance(tool_call_id, str) and not tool_call_id.strip()):
                 logger.warning(
                     "Attempted to add tool result without valid tool_call_id in Mode.TOOLS. "
                     "Skipping to prevent protocol violation."
