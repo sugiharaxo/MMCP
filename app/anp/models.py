@@ -93,6 +93,9 @@ class ChatSession(Base):
     # Conversation history (stored as JSON)
     history: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
 
+    # Pending action for conversational HITL (stored as JSON)
+    pending_action: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()

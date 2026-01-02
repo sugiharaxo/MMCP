@@ -115,12 +115,15 @@ class EventBus:
             await session.commit()
             await session.refresh(event)
 
+            if event.id is None:
+                raise ValueError("Database failed to generate a UUID for the EventLedger.")
+
             logger.info(f"Created notification: {event.id} (status={event.status})")
 
             # Route to appropriate channel
             await self._route_to_channel(session, event)
 
-            return event.id
+            return str(event.id)
 
     async def _handle_deduplication(
         self,
