@@ -202,6 +202,12 @@ class AGUI {
         </div>
     `;
 
+    // Safely set the explanation text after DOM is created
+    const explanationEl = document.getElementById('explanation-text');
+    if (explanationEl) {
+        explanationEl.textContent = data.explanation || 'No explanation provided';
+    }
+
     this.actionModal.classList.remove("hidden");
     this.addMessage("system", `⏸Agent paused for approval: ${data.tool_name}`);
   }
