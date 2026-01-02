@@ -7,8 +7,8 @@ Provides the main chat endpoint that handles user messages and HITL interruption
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.agent.orchestrator import AgentOrchestrator
 from app.agent.schemas import ActionRequestResponse
+from main import orchestrator
 
 
 class ChatRequest(BaseModel):
@@ -33,8 +33,7 @@ async def chat_endpoint(chat_request: ChatRequest):
         raise HTTPException(status_code=400, detail="Message is required")
 
     try:
-        # Create orchestrator and process the message
-        orchestrator = AgentOrchestrator()
+        # Use the global orchestrator instance
         response = await orchestrator.chat(chat_request.message, chat_request.session_id)
 
         # Check if this is an ActionRequestResponse (HITL interruption)
