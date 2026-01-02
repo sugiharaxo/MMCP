@@ -8,14 +8,15 @@ import json
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import and_, select
 
+from app.agent.orchestrator import AgentOrchestrator
 from app.anp.event_bus import EventBus
 from app.anp.models import EventLedger, EventStatus
 from app.anp.notification_dispatcher import NotificationDispatcher
-from app.anp.schemas import NotificationAck, NotificationResponse, SessionCreate, SessionResponse
+from app.anp.schemas import NotificationAck, NotificationResponse, SessionResponse
 from app.core.database import get_session
 from app.core.logger import logger
 from app.core.session_manager import SessionManager
@@ -28,14 +29,14 @@ router = APIRouter(prefix="/api/v1/notifications", tags=["notifications"])
 
 
 @router.post("/sessions", response_model=SessionResponse)
-async def create_session(session_data: SessionCreate):
+async def create_session():
     """
     Create a new chat session.
 
     Sessions represent persistent chat conversations.
     They exist until explicitly deleted.
     """
-    user_id = "default"  # Single-user system for now
+    # user_id = "default"  # Single-user system for now - reserved for future use
 
     session_id = session_manager.create_session()
 
@@ -50,7 +51,7 @@ async def delete_session(session_id: str):
 
     This permanently removes the session and any associated context.
     """
-    user_id = "default"  # Single-user system for now
+    # user_id = "default"  # Single-user system for now - reserved for future use
 
     session_manager.delete_session(session_id)
     return {"status": "ok", "message": f"Session {session_id} deleted"}
@@ -63,7 +64,7 @@ async def list_sessions():
 
     Returns sessions that exist (i.e., chats that haven't been deleted).
     """
-    user_id = "default"  # Single-user system for now
+    # user_id = "default"  # Single-user system for now - reserved for future use
 
     # For now, we can't easily track creation timestamps for existing sessions
     # In a real implementation, sessions would be stored in the database
@@ -74,6 +75,49 @@ async def list_sessions():
         SessionResponse(id=session_id, created_at=datetime.now(timezone.utc))
         for session_id in active_sessions
     ]
+
+
+@router.post("/notifications/{event_id}/approve")
+async def approve_action(event_id: str):
+    """
+    Approve and execute a pending external tool action.
+
+    Retrieves the frozen state, executes the tool, and resumes the agent conversation.
+    """
+    user_id = "default"  # Single-user system for now
+
+    async with get_session() as session:
+        # Verify the event exists and belongs to the user
+        stmt = select(EventLedger).where(EventLedger.id == event_id)
+        result = await session.execute(stmt)
+        event = result.scalar_one_or_none()
+
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        if event.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        if not event.pending_action_data:
+            raise HTTPException(status_code=400, detail="No pending action for this event")
+
+        # Mark event as delivered (tool approved)
+        success = await event_bus.mark_delivered(event_id)
+        if not success:
+            raise HTTPException(status_code=400, detail="Failed to approve action")
+
+        # Use orchestrator to handle the resumption
+        try:
+            orchestrator = AgentOrchestrator()
+            final_response = await orchestrator.resume_action(
+                event_id=event_id, session_id=event.session_id, trace_id=f"resumed-{event_id}"
+            )
+
+            return {"status": "success", "response": final_response}
+
+        except Exception as e:
+            logger.error(f"Failed to resume conversation: {e}")
+            raise HTTPException(status_code=500, detail="Failed to resume conversation") from e
 
 
 @router.websocket("/ws")
@@ -140,11 +184,11 @@ async def ack_endpoint(
 
     Useful for clients that don't support WebSockets.
     """
-    user_id = "default"  # Single-user system for now
+    # user_id = "default"  # Single-user system for now - reserved for future use
 
     # Convert NotificationAck to dict format expected by NotificationDispatcher
-    ack_dict = {"event_id": ack.id, "lease_id": getattr(ack, 'lease_id', 1)}
-    success = await notification_dispatcher.handle_ack(ack_dict, user_id)
+    ack_dict = {"event_id": ack.id, "lease_id": getattr(ack, "lease_id", 1)}
+    success = await notification_dispatcher.handle_ack(ack_dict, "default")
 
     if success:
         return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "ok", "id": ack.id})

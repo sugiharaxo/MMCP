@@ -8,14 +8,18 @@ from inspect import isclass
 from typing import Any, Union
 
 from pydantic import BaseModel
+from sqlalchemy import select
 
-from app.agent.schemas import FinalResponse
+from app.agent.schemas import ActionRequestResponse, FinalResponse
 
 # ANP imports
 from app.anp.agent_integration import AgentNotificationInjector
 from app.anp.event_bus import EventBus
+from app.anp.models import ChatSession, EventLedger
+from app.anp.schemas import NotificationCreate, RoutingFlags
 from app.core.config import settings
 from app.core.context import MMCPContext
+from app.core.database import get_session
 from app.core.errors import (
     MMCPError,
     map_agent_error,
@@ -369,6 +373,50 @@ Use tools when you need specific information or actions. When you have enough in
             else:
                 logger.debug(f"Provider '{provider_key}' returned no data (skipped or failed)")
 
+    async def _load_session(self, session_id: str) -> None:
+        """
+        Load conversation history from database for session resumption.
+
+        Args:
+            session_id: Session ID to load
+        """
+        async with get_session() as session:
+            stmt = select(ChatSession).where(ChatSession.id == session_id)
+            result = await session.execute(stmt)
+            chat_session = result.scalar_one_or_none()
+
+            if chat_session:
+                self.history = chat_session.history.copy()
+                logger.debug(f"Loaded session {session_id} with {len(self.history)} messages")
+            else:
+                # Initialize new session
+                self.history = []
+                logger.debug(f"Initialized new session {session_id}")
+
+    async def _save_session(self, session_id: str) -> None:
+        """
+        Save current conversation history to database.
+
+        Args:
+            session_id: Session ID to save
+        """
+        async with get_session() as session:
+            # Try to update existing session
+            stmt = select(ChatSession).where(ChatSession.id == session_id)
+            result = await session.execute(stmt)
+            chat_session = result.scalar_one_or_none()
+
+            if chat_session:
+                # Update existing
+                chat_session.history = self.history.copy()
+            else:
+                # Create new
+                chat_session = ChatSession(id=session_id, history=self.history.copy())
+                session.add(chat_session)
+
+            await session.commit()
+            logger.debug(f"Saved session {session_id} with {len(self.history)} messages")
+
     async def safe_tool_call(
         self, tool, tool_name: str, args: dict, context: MMCPContext
     ) -> tuple[str, bool]:
@@ -425,7 +473,68 @@ Use tools when you need specific information or actions. When you have enough in
                 error_msg = f"Tool '{tool_name}' failed: {tool_error.message}. Try a different approach or check if the tool is configured correctly."
             return error_msg, True
 
-    async def chat(self, user_input: str, trace_id: str | None = None) -> str:
+    async def resume_action(
+        self, event_id: str, session_id: str | None = None, trace_id: str | None = None
+    ) -> str:
+        """
+        Resume a paused conversation by executing an approved external action.
+
+        Args:
+            event_id: The ANP event ID containing the pending action
+            session_id: Optional session ID for conversation context
+            trace_id: Optional trace ID for logging
+
+        Returns:
+            The final response after action execution and conversation continuation
+        """
+        async with get_session() as session:
+            # Look up the ANP event
+            stmt = select(EventLedger).where(EventLedger.id == event_id)
+            result = await session.execute(stmt)
+            event = result.scalar_one_or_none()
+
+            if not event or not event.pending_action_data:
+                raise ValueError(f"No pending action found for event {event_id}")
+
+            # Extract pending action data
+            pending_data = event.pending_action_data
+            tool_name = pending_data["tool_name"]
+            tool_args = pending_data["tool_args"]
+
+            # Load session context if provided
+            if session_id:
+                await self._load_session(session_id)
+
+            # Get the tool and execute it
+            tool = self.loader.get_tool_by_name(tool_name)
+            if not tool:
+                raise ValueError(f"Tool '{tool_name}' not found")
+
+            # Execute the tool
+            context = MMCPContext(trace_id=trace_id or f"resumed-{event_id}")
+            context.set_available_tools(self.loader.list_tools())
+
+            result, is_error = await self.safe_tool_call(tool, tool_name, tool_args, context)
+
+            if is_error:
+                raise RuntimeError(f"Tool execution failed: {result}")
+
+            # Continue the agent reasoning loop with the tool result
+            # Add the tool result to history with correct tool_call_id
+            self.history.append(
+                {
+                    "role": "tool",
+                    "content": result,
+                    "tool_call_id": f"resumed-{event_id}",
+                }
+            )
+
+            # Continue the ReAct loop (empty input to resume)
+            return await self.chat("", session_id, trace_id)
+
+    async def chat(
+        self, user_input: str, session_id: str | None = None, trace_id: str | None = None
+    ) -> str | ActionRequestResponse:
         """
         The main ReAct loop using native tool calling.
 
@@ -453,6 +562,10 @@ Use tools when you need specific information or actions. When you have enough in
         # Generate trace_id if not provided
         if trace_id is None:
             trace_id = str(uuid.uuid4())
+
+        # Load session history if session_id provided
+        if session_id:
+            await self._load_session(session_id)
 
         # Create MMCP context for this conversation
         context = MMCPContext(trace_id=trace_id)
@@ -485,8 +598,9 @@ Use tools when you need specific information or actions. When you have enough in
             messages = [m for m in self.history if m["role"] != "system"]
             self.history = [system_message] + messages
 
-            # 3. Add the user's current message
-            self.history.append({"role": "user", "content": user_input})
+            # 3. Add the user's current message (skip if empty for resumption)
+            if user_input.strip():
+                self.history.append({"role": "user", "content": user_input})
 
             # Build the Union response model: FinalResponse | ToolSchema1 | ToolSchema2 | ...
             ResponseModel = self._get_response_model()
@@ -604,8 +718,9 @@ Use tools when you need specific information or actions. When you have enough in
                     # Feed error back and continue loop
                     self.history.append(
                         {
-                            "role": "user",
-                            "content": f"Observation: {result}",
+                            "role": "tool",
+                            "content": result,
+                            "tool_call_id": f"standby-{tool_name}-{context.runtime.trace_id}",
                         }
                     )
                     continue
@@ -633,8 +748,9 @@ Use tools when you need specific information or actions. When you have enough in
                     # Feed error back to LLM so it can inform the user
                     self.history.append(
                         {
-                            "role": "user",
-                            "content": f"Observation from {tool_name}: {result}",
+                            "role": "tool",
+                            "content": result,
+                            "tool_call_id": f"error-{tool_name}-{context.runtime.trace_id}",
                         }
                     )
                     continue
@@ -643,13 +759,83 @@ Use tools when you need specific information or actions. When you have enough in
                 # Use mode='json' to ensure SecretStr fields are masked (not stringified as SecretStr('**********'))
                 tool_args = response.model_dump(mode="json")
 
-                # ANP: Check tool classification and promote EXTERNAL tools for user visibility
-                # Classification is a ClassVar with default "EXTERNAL" (safety-first per ANP spec)
+                # ANP: Check tool classification - EXTERNAL tools require user approval
                 if tool.classification == "EXTERNAL":
-                    logger.debug(f"Tool '{tool_name}' is EXTERNAL, promoting for user visibility")
-                    await self.notification_injector.promote_external_tool()
+                    logger.debug(f"Tool '{tool_name}' is EXTERNAL, requiring user approval")
+
+                    # Create ANP event for this action request
+                    event_id = await self.event_bus.emit_notification(
+                        NotificationCreate(
+                            content=f"Agent requests approval to execute: {tool_name}",
+                            routing=RoutingFlags(
+                                address="session" if session_id else "user",
+                                target="user",
+                                handler="system",
+                            ),
+                            user_id="default",  # Single-user for now
+                            session_id=session_id,
+                            metadata={
+                                "tool_name": tool_name,
+                                "tool_args": tool_args,
+                                "requires_approval": True,
+                            },
+                        )
+                    )
+
+                    # Perform contextualization turn to get agent explanation
+                    explanation_prompt = (
+                        "You are about to execute an external tool that requires user approval. "
+                        "You are currently in an interrupted state - the tool has NOT been executed yet. "
+                        "Explain to the user what you are about to do in a friendly, contextual manner. "
+                        "Do not mention the tool name literally - contextualize the action. "
+                        "Make it clear this is an action you want to take with their permission. "
+                        f"You are about to execute: {tool_name} with arguments: {tool_args}"
+                    )
+
+                    context_messages = self.history + [
+                        {"role": "system", "content": explanation_prompt}
+                    ]
+
+                    explanation_response = await self.llm.generate(
+                        context_messages, trace_id=trace_id
+                    )
+
+                    # Extract the explanation from the agent's response
+                    if hasattr(explanation_response, "answer"):
+                        explanation = explanation_response.answer
+                    else:
+                        explanation = str(explanation_response)
+
+                    # Save current state with pending action
+                    pending_data = {
+                        "tool_name": tool_name,
+                        "tool_args": tool_args,
+                        "step": step,
+                        "context": context.model_dump() if hasattr(context, "model_dump") else {},
+                    }
+
+                    # Update the ANP event with pending action data
+                    async with get_session() as db_session:
+                        stmt = select(EventLedger).where(EventLedger.id == event_id)
+                        result = await db_session.execute(stmt)
+                        event = result.scalar_one()
+                        event.pending_action_data = pending_data
+                        await db_session.commit()
+
+                    # Save session state
+                    if session_id:
+                        await self._save_session(session_id)
+
+                    # Return interruption response
+                    return ActionRequestResponse(
+                        event_id=event_id,
+                        explanation=explanation,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                    )
+
                 else:
-                    logger.debug(f"Tool '{tool_name}' is INTERNAL, no user notification required")
+                    logger.debug(f"Tool '{tool_name}' is INTERNAL, proceeding with execution")
 
                 self._emit_status(
                     f"[Step {step + 1}] Action: Call tool '{tool_name}' with args {tool_args}",
@@ -693,8 +879,9 @@ Use tools when you need specific information or actions. When you have enough in
                 # This allows the LLM to process errors and adapt its strategy
                 self.history.append(
                     {
-                        "role": "user",
-                        "content": f"Observation from {tool_name}: {result}",
+                        "role": "tool",
+                        "content": result,
+                        "tool_call_id": f"success-{tool_name}-{context.runtime.trace_id}",
                     }
                 )
                 # Loop continues so LLM can process the result
