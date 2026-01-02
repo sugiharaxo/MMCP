@@ -4,18 +4,14 @@ import asyncio
 import json
 import uuid
 from datetime import timezone
-from functools import reduce
-from inspect import isclass
-from typing import Union
 
-from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.agent.context_manager import ContextManager
 from app.agent.history_manager import HistoryManager
 from app.agent.llm_interface import LLMInterface
 from app.agent.react_loop import ReActLoop
-from app.agent.schemas import ActionRequestResponse, FinalResponse
+from app.agent.schemas import ActionRequestResponse
 from app.agent.session_manager import SessionManager
 
 # ANP imports (EventBus for agent turn lock, AgentNotificationInjector for async notifications)
@@ -57,39 +53,6 @@ class AgentOrchestrator:
         self.event_bus = EventBus()
         self.notification_injector = AgentNotificationInjector(self.event_bus)
         self.context_manager = ContextManager(loader, self.notification_injector, self.health)
-
-    def _get_response_model(self) -> type:
-        """
-        Build the discriminated Union response model: Union[FinalResponse, ToolSchema1, ToolSchema2, ...]
-
-        The LLM will return one of these types directly. We use isinstance() to route.
-        """
-        tool_schemas = []
-        for tool in self.loader.tools.values():
-            if hasattr(tool, "input_schema"):
-                schema = tool.input_schema
-                # Verify it's actually a class before adding
-                if schema and isclass(schema) and issubclass(schema, BaseModel):
-                    tool_schemas.append(schema)
-                else:
-                    logger.warning(
-                        f"Tool '{tool.name}' has invalid input_schema: {schema}. "
-                        f"Expected a BaseModel subclass."
-                    )
-
-        if not tool_schemas:
-            # No tools available - can only return FinalResponse
-            return FinalResponse
-
-        # Build Union using typing.Union for dynamic construction in reduce()
-        # Note: Python automatically normalizes nested Unions (Union[Union[A, B], C] -> Union[A, B, C])
-        # We use typing.Union (not | operator) because:
-        # 1. The | operator cannot be used in reduce() lambda expressions
-        # 2. typing.Union is more explicit and compatible with Instructor/Pydantic
-        # 3. Instructor (via Pydantic) handles Union types correctly for discriminated unions
-        ResponseModel = reduce(lambda acc, schema: Union[acc, schema], tool_schemas, FinalResponse)  # noqa: UP007
-
-        return ResponseModel
 
     async def _emit_status(
         self,
