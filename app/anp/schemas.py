@@ -77,3 +77,16 @@ class NotificationAck(BaseModel):
 
     type: Literal["ack"] = "ack"
     id: str = Field(description="Notification ID to acknowledge")
+
+
+class SessionCreate(BaseModel):
+    """Schema for creating a new chat session."""
+
+    pass  # No fields needed for basic session creation
+
+
+class SessionResponse(BaseModel):
+    """Schema for session information."""
+
+    id: str = Field(description="Session ID")
+    created_at: datetime = Field(description="Session creation timestamp")

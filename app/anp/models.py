@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -73,3 +73,7 @@ class EventLedger(Base):
             f"<EventLedger(id={self.id!r}, status={self.status.value}, "
             f"user_id={self.user_id!r}, session_id={self.session_id!r})>"
         )
+
+
+# Composite indexes for performance
+Index("ix_event_ledger_user_status", EventLedger.user_id, EventLedger.status)
