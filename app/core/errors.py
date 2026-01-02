@@ -145,8 +145,8 @@ def map_provider_error(e: Exception, trace_id: str | None = None) -> MMCPError:
         or "maximum context" in error_str
         or "token limit" in error_str
         or "token count" in error_str
-        or "exceeds" in error_str
-        and ("token" in error_str or "length" in error_str)
+        or ("exceeds" in error_str
+            and ("token" in error_str or "length" in error_str))
         or "too many tokens" in error_str
         or "input too long" in error_str
     ):
