@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from app.agent.schemas import ActionRequestResponse, FinalResponse
 
-# ANP imports (ChatSession and EventBus still needed for agent turn lock)
+# ANP imports (EventBus for agent turn lock, AgentNotificationInjector for async notifications)
 from app.anp.agent_integration import AgentNotificationInjector
 from app.anp.event_bus import EventBus
 from app.anp.models import ChatSession
@@ -36,10 +36,10 @@ from app.core.utils.pruner import ContextPruner
 
 class AgentOrchestrator:
     """
-    Manages the agent's conversation history and tool execution loop.
+    Orchestrates the ReAct loop for the agent.
 
-    Implements character-based context management for efficient memory usage.
-    Uses Instructor's discriminated Union pattern: LLM returns FinalResponse or a tool input schema directly.
+    Manages conversation flow, tool execution, and HITL interruptions for external tools.
+    Uses ANP only for asynchronous notifications, not for synchronous chat HITL.
     """
 
     def __init__(self, loader: PluginLoader, health: HealthMonitor | None = None):
@@ -54,7 +54,7 @@ class AgentOrchestrator:
         self.loader = loader
         self.history: list[dict] = []
         self.health = health or HealthMonitor()
-        # ANP integration (still needed for notifications)
+        # EventBus only needed for agent turn lock and async notifications
         self.event_bus = EventBus()
         self.notification_injector = AgentNotificationInjector(self.event_bus)
         self._internal_turn = False
@@ -445,13 +445,11 @@ Use tools when you need specific information or actions. When you have enough in
             Tool result as string, or error message if execution failed
         """
         try:
-            # ANP: Check tool classification and promote EXTERNAL tools for user visibility
-            # Classification is a ClassVar with default "EXTERNAL" (safety-first per ANP spec)
+            # Check tool classification for logging (EXTERNAL tools require user approval in chat)
             if tool.classification == "EXTERNAL":
-                logger.debug(f"Tool '{tool_name}' is EXTERNAL, promoting for user visibility")
-                await self.notification_injector.promote_external_tool()
+                logger.debug(f"Tool '{tool_name}' is EXTERNAL, will require user approval in chat")
             else:
-                logger.debug(f"Tool '{tool_name}' is INTERNAL, no user notification required")
+                logger.debug(f"Tool '{tool_name}' is INTERNAL, no user approval required")
 
             # Execute tool with validated arguments
             # Tool already has paths, system, and settings injected via __init__ (self.paths, self.system, self.settings)
@@ -539,23 +537,31 @@ Use tools when you need specific information or actions. When you have enough in
                 if is_error:
                     # Feed error back to LLM so it can explain to user
                     tool_call_id = f"resumed-error-{approval_id}"
-                    self.history.append({
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [{
-                            "id": tool_call_id,
-                            "type": "function",
-                            "function": {
-                                "name": tool_name,
-                                "arguments": json.dumps(tool_args) if isinstance(tool_args, dict) else str(tool_args),
-                            },
-                        }],
-                    })
-                    self.history.append({
-                        "role": "tool",
-                        "content": result,
-                        "tool_call_id": tool_call_id,
-                    })
+                    self.history.append(
+                        {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": tool_call_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tool_name,
+                                        "arguments": json.dumps(tool_args)
+                                        if isinstance(tool_args, dict)
+                                        else str(tool_args),
+                                    },
+                                }
+                            ],
+                        }
+                    )
+                    self.history.append(
+                        {
+                            "role": "tool",
+                            "content": result,
+                            "tool_call_id": tool_call_id,
+                        }
+                    )
                     # Fall through to resume the conversation with error in history
                 else:
                     # Add tool execution to history (reconstructs what would be there if tool was called normally)
@@ -667,7 +673,7 @@ Use tools when you need specific information or actions. When you have enough in
         # This runs on EVERY user message to ensure fresh context is available
         await self.assemble_llm_context(user_input, context)
 
-        # Acquire agent turn lock for causal serialization
+        # Acquire agent turn lock for causal serialization of agent actions
         event_bus = EventBus()
         agent_turn_lock = event_bus.get_agent_turn_lock()
         await agent_turn_lock.acquire()
@@ -778,7 +784,7 @@ Use tools when you need specific information or actions. When you have enough in
                         status_type="thought",
                     )
 
-                    # ANP: Process agent ACKs
+                    # Process agent ACKs for asynchronous notifications
                     if response.acknowledged_ids:
                         await self.notification_injector.mark_agent_processed(
                             response.acknowledged_ids
@@ -791,7 +797,7 @@ Use tools when you need specific information or actions. When you have enough in
                     if session_id:
                         await self._save_session(session_id)
 
-                    # ANP: Flush system alert queue after agent turn
+                    # Flush system alert queue after agent turn
                     await event_bus.flush_system_alert_queue()
 
                     return response.answer
@@ -882,7 +888,7 @@ Use tools when you need specific information or actions. When you have enough in
                     else:
                         explanation = str(explanation_response)
 
-                    # Store pending action in ChatSession instead of ANP event
+                    # Store pending action in ChatSession for synchronous HITL
                     pending_data = {
                         "approval_id": approval_id,
                         "tool_name": tool_name,
@@ -891,8 +897,7 @@ Use tools when you need specific information or actions. When you have enough in
                         "context": context.model_dump() if hasattr(context, "model_dump") else {},
                     }
 
-                    # Save to ChatSession with pending action
-                    # Save to ChatSession with pending action (requires session_id)
+                    # Save to ChatSession with pending action for synchronous HITL
                     if not session_id:
                         raise ValueError("EXTERNAL tool requires session_id for HITL approval flow")
                     await self._save_session_with_pending_action(session_id, pending_data)
@@ -969,12 +974,12 @@ Use tools when you need specific information or actions. When you have enough in
                 status_type="info",
             )
 
-            # ANP: Flush system alert queue after agent turn
+            # Flush system alert queue after agent turn
             await event_bus.flush_system_alert_queue()
 
             return "I attempted to solve this but reached my reasoning limit. Please try being more specific or breaking down your request."
         finally:
-            # ANP: Release agent turn lock
+            # Release agent turn lock
             agent_turn_lock.release()
 
     async def generate(self, messages, trace_id=None):
