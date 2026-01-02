@@ -537,7 +537,26 @@ Use tools when you need specific information or actions. When you have enough in
                 result, is_error = await self.safe_tool_call(tool, tool_name, tool_args, context)
 
                 if is_error:
-                    raise RuntimeError(f"Tool execution failed: {result}")
+                    # Feed error back to LLM so it can explain to user
+                    tool_call_id = f"resumed-error-{approval_id}"
+                    self.history.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": tool_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "arguments": json.dumps(tool_args) if isinstance(tool_args, dict) else str(tool_args),
+                            },
+                        }],
+                    })
+                    self.history.append({
+                        "role": "tool",
+                        "content": result,
+                        "tool_call_id": tool_call_id,
+                    })
+                    # Continue to resumption (skip the else block below)
 
                 # Add tool execution to history (reconstructs what would be there if tool was called normally)
                 tool_call_id = f"resumed-{approval_id}"
@@ -873,8 +892,10 @@ Use tools when you need specific information or actions. When you have enough in
                     }
 
                     # Save to ChatSession with pending action
-                    if session_id:
-                        await self._save_session_with_pending_action(session_id, pending_data)
+                    # Save to ChatSession with pending action (requires session_id)
+                    if not session_id:
+                        raise ValueError("EXTERNAL tool requires session_id for HITL approval flow")
+                    await self._save_session_with_pending_action(session_id, pending_data)
 
                     # Return interruption response
                     return ActionRequestResponse(
