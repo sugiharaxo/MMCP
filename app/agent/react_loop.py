@@ -6,11 +6,17 @@ from typing import Any
 
 from app.agent.history_manager import HistoryManager
 from app.agent.llm_interface import LLMInterface
-from app.agent.schemas import ActionRequestResponse, FinalResponse
+from app.agent.schemas import (
+    ActionRequestResponse,
+    FinalResponse,
+    ReasonedToolCall,
+    get_reasoned_model,
+)
 from app.core.context import MMCPContext
 from app.core.errors import MMCPError, map_agent_error, map_provider_error
 from app.core.logger import logger
 from app.core.plugin_loader import PluginLoader
+from app.core.security import sanitize_explanation
 
 
 class ReActLoop:
@@ -47,8 +53,8 @@ class ReActLoop:
             session_history, system_prompt, user_input
         )
 
-        # Build the Union response model
-        ResponseModel = self._get_response_model()
+        # Build the reasoned Union response model (FinalResponse | ReasonedToolCall)
+        ResponseModel = self._get_reasoned_response_model()
 
         # ReAct loop: allow multiple reasoning steps
         max_steps = 5
@@ -61,14 +67,14 @@ class ReActLoop:
             context.increment_step()
             self.history_manager.trim_history(history)
 
-            # Get LLM decision
+            # Turn 1 (Reasoning): Single-turn reasoned decision
             try:
                 context.increment_llm_call()
                 if self.status_callback:
                     await self.status_callback(
                         "Thinking about next action...", context.runtime.trace_id, "thought"
                     )
-                response = await self.llm.get_agent_decision(
+                response = await self.llm.get_reasoned_decision(
                     history, ResponseModel, context.runtime.trace_id
                 )
                 llm_retry_count = 0
@@ -96,12 +102,21 @@ class ReActLoop:
 
             # Route based on response type (outside try/except)
             if isinstance(response, FinalResponse):
+                # Generate rich dialogue response using DialogueProfile
                 result = await self._handle_final_response(
                     response, history, context, notification_injector
                 )
                 return result, history
+            elif isinstance(response, ReasonedToolCall):
+                # Handle reasoned tool call (single-turn atomic consistency)
+                result = await self._handle_reasoned_tool_call(response, history, context)
+                if isinstance(result, ActionRequestResponse):
+                    return result, history  # HITL interruption
+                elif isinstance(result, str):
+                    return result, history  # Circuit breaker or error response
+                # Continue loop with tool result in history
             else:
-                # It's a tool call
+                # Fallback: treat as regular tool call (for backward compatibility)
                 result = await self._handle_tool_call(response, history, context)
                 if isinstance(result, ActionRequestResponse):
                     return result, history  # HITL interruption
@@ -166,21 +181,173 @@ class ReActLoop:
         context: MMCPContext,
         notification_injector=None,
     ) -> str:
-        """Handle final response from LLM."""
-        self.history_manager.add_assistant_response(history, response.answer)
+        """
+        Handle final response from LLM reasoning phase.
 
+        If the reasoning phase returned a FinalResponse, we use the DialogueProfile
+        to generate a rich, conversational response to the user.
+        """
         # Process agent ACKs for asynchronous notifications
         if response.acknowledged_ids and notification_injector:
             user_id = "default"  # Single-user system for now
             await notification_injector.mark_agent_processed(response.acknowledged_ids, user_id)
 
-        context.log_inspection()
-        return response.answer
+        # Generate rich dialogue response using DialogueProfile
+        # Use the thought and answer from reasoning as context
+        dialogue_messages = history + [
+            {
+                "role": "system",
+                "content": f"Internal reasoning: {response.thought}\n\nGenerate a natural, helpful response to the user based on this reasoning.",
+            },
+            {"role": "user", "content": "Please provide your response."},
+        ]
+
+        try:
+            dialogue_response = await self.llm.generate_dialogue_response(
+                dialogue_messages, context.runtime.trace_id
+            )
+            self.history_manager.add_assistant_response(history, dialogue_response)
+            context.log_inspection()
+            return dialogue_response
+        except Exception as e:
+            # Fallback to the answer from reasoning if dialogue generation fails
+            logger.warning(
+                f"Dialogue generation failed, using reasoning answer (trace_id={context.runtime.trace_id}): {e}",
+                extra={"trace_id": context.runtime.trace_id},
+            )
+            self.history_manager.add_assistant_response(history, response.answer)
+            context.log_inspection()
+            return response.answer
+
+    async def _handle_reasoned_tool_call(
+        self,
+        response: ReasonedToolCall,
+        history: list[dict[str, Any]],
+        context: MMCPContext,
+    ) -> str | ActionRequestResponse | None:
+        """
+        Handle reasoned tool call from single-turn reasoning phase.
+
+        Extracts the tool and its rationale, then routes based on classification:
+        - EXTERNAL: Sanitize rationale and return ActionRequestResponse for HITL
+        - INTERNAL: Log rationale for auditability and execute tool
+        """
+        tool_call = response.tool_call
+        rationale = response.rationale
+
+        # Extract tool from registry
+        tool = self.loader.get_tool_by_schema(type(tool_call))
+        if not tool:
+            tool_name = type(tool_call).__name__
+            result = f"Error: Tool for schema '{tool_name}' not found."
+            self.history_manager.add_tool_result(history, f"error-{tool_name}", result)
+            return None
+
+        # Check if tool is in standby
+        if tool.name in self.loader.standby_tools:
+            plugin_name = tool.plugin_name
+            config_error = self.loader._plugin_config_errors.get(plugin_name, "Setup required")
+            result = f"Tool '{tool.name}' is on standby. {config_error}."
+            self.history_manager.add_tool_result(history, f"error-{tool.name}", result)
+            return None
+
+        # Prepare tool execution
+        tool_args = tool_call.model_dump(mode="json")
+        tool_name = tool.name
+
+        # Check classification
+        if tool.classification == "EXTERNAL":
+            # Sanitize rationale to prevent injection attacks
+            sanitized_rationale = sanitize_explanation(rationale)
+
+            # Template-based fallback if rationale is missing or empty
+            if not sanitized_rationale or not sanitized_rationale.strip():
+                sanitized_rationale = (
+                    f"I'm requesting to use {tool_name} to proceed with your request."
+                )
+            # TODO Implement TTL (Time-To-Live) for HITL requests.
+            # Stale requests (> 24h for example) should be auto-expired to prevent database bloat
+            # and unintended actions from a shifted context.
+
+            # TODO Add 'Contextual Re-validation' for approvals older than 1 hour (example).
+            # If a user takes several hours to approve, the agent should perform
+            # a silent check (e.g., verify URL still works) before final execution.
+
+            # TODO(ANP): Internal Turn Escalation - ANP Spec Section 6.1
+            # When an EXTERNAL tool is invoked during an Internal Turn (triggered by ANP Channel C
+            # with Target=AGENT), the protocol requires automatic promotion of Target→USER to ensure
+            # user visibility. Currently, all EXTERNAL tools trigger HITL (ActionRequestResponse),
+            # which is safer but doesn't implement the ANP internal turn escalation mechanism.
+            #
+            # Required implementation:
+            # 1. Detect if current turn is "internal" (triggered by ANP notification with Target=AGENT)
+            # 2. If internal turn + EXTERNAL tool: call notification_injector.promote_external_tool()
+            #    to promote Target→USER and re-route to Channel A/B
+            # 3. Set FinalResponse.internal_turn=True when appropriate
+            # 4. Ensure user visibility is guaranteed per ANP spec Section 6.1.1
+            #
+            # See: docs/specs/anp-v1.0.md Section 6.1 "The Internal Turn Protection"
+
+            approval_id = str(uuid.uuid4())
+            return ActionRequestResponse(
+                approval_id=approval_id,
+                explanation=sanitized_rationale,
+                tool_name=tool_name,
+                tool_args=tool_args,
+            )
+
+        # Execute internal tool
+        # Log rationale for auditability
+        logger.info(
+            f"Executing INTERNAL tool '{tool_name}' with rationale: {rationale} "
+            f"(trace_id={context.runtime.trace_id})",
+            extra={
+                "trace_id": context.runtime.trace_id,
+                "tool_name": tool_name,
+                "rationale": rationale,
+            },
+        )
+
+        if self.status_callback:
+            await self.status_callback(
+                f"Executing tool: {tool_name}", context.runtime.trace_id, "tool_start"
+            )
+        result, is_error = await self.safe_tool_call(tool, tool_name, tool_args, context)
+        if self.status_callback:
+            await self.status_callback(
+                f"Completed tool: {tool_name}", context.runtime.trace_id, "tool_end"
+            )
+
+        # Add result to history
+        call_id = getattr(tool_call, "id", f"internal-{uuid.uuid4()}")
+        self.history_manager.add_tool_result(history, call_id, result)
+
+        # Check for circuit breaker
+        if is_error and context.is_tool_circuit_breaker_tripped(tool_name, threshold=3):
+            failure_count = context.get_tool_failure_count(tool_name)
+            msg = f"I encountered a persistent issue with the {tool_name} tool. {result}"
+            logger.error(
+                f"Circuit breaker triggered for {tool_name} after {failure_count} failures "
+                f"(trace_id={context.runtime.trace_id})",
+                extra={
+                    "trace_id": context.runtime.trace_id,
+                    "tool_name": tool_name,
+                    "failure_count": failure_count,
+                },
+            )
+            return msg
+
+        return None
 
     async def _handle_tool_call(
         self, response: Any, history: list[dict[str, Any]], context: MMCPContext
     ) -> str | ActionRequestResponse | None:
-        """Handle tool call. Returns ActionRequestResponse for HITL or None to continue."""
+        """
+        Handle tool call (legacy method for backward compatibility).
+
+        This method is used when the response is not a ReasonedToolCall,
+        maintaining backward compatibility with the old flow.
+        """
         tool = self.loader.get_tool_by_schema(type(response))
         if not tool:
             tool_name = type(response).__name__
@@ -202,22 +369,17 @@ class ReActLoop:
 
         # Check classification
         if tool.classification == "EXTERNAL":
-            # TODO(ANP): Internal Turn Escalation - ANP Spec Section 6.1
-            # When an EXTERNAL tool is invoked during an Internal Turn (triggered by ANP Channel C
-            # with Target=AGENT), the protocol requires automatic promotion of Target→USER to ensure
-            # user visibility. Currently, all EXTERNAL tools trigger HITL (ActionRequestResponse),
-            # which is safer but doesn't implement the ANP internal turn escalation mechanism.
-            #
-            # Required implementation:
-            # 1. Detect if current turn is "internal" (triggered by ANP notification with Target=AGENT)
-            # 2. If internal turn + EXTERNAL tool: call notification_injector.promote_external_tool()
-            #    to promote Target→USER and re-route to Channel A/B
-            # 3. Set FinalResponse.internal_turn=True when appropriate
-            # 4. Ensure user visibility is guaranteed per ANP spec Section 6.1.1
-            #
-            # See: docs/specs/anp-v1.0.md Section 6.1 "The Internal Turn Protection"
-            # Generate HITL request
-            return await self._generate_hitl_request(tool_name, tool_args, history, context)
+            # Template-based fallback for legacy flow
+            explanation = f"I'm requesting to use {tool_name} to proceed with your request."
+            sanitized_explanation = sanitize_explanation(explanation)
+
+            approval_id = str(uuid.uuid4())
+            return ActionRequestResponse(
+                approval_id=approval_id,
+                explanation=sanitized_explanation,
+                tool_name=tool_name,
+                tool_args=tool_args,
+            )
 
         # Execute internal tool
         if self.status_callback:
@@ -251,38 +413,6 @@ class ReActLoop:
 
         return None
 
-    async def _generate_hitl_request(
-        self,
-        tool_name: str,
-        tool_args: dict[str, Any],
-        history: list[dict[str, Any]],
-        context: MMCPContext,
-    ) -> ActionRequestResponse:
-        """Generate HITL request for external tools."""
-        # Contextualization turn to get explanation
-        explanation_prompt = (
-            "You are about to execute an external tool that requires user approval. "
-            "You are currently in an interrupted state - the tool has NOT been executed yet. "
-            "Explain to the user what you are about to do in a friendly, contextual manner. "
-            "Do not mention the tool name literally - contextualize the action. "
-            "Make it clear this is an action you want to take with their permission. "
-            f"You are about to execute: {tool_name} with arguments: {tool_args}"
-        )
-
-        context_messages = history + [{"role": "system", "content": explanation_prompt}]
-
-        explanation = await self.llm.generate_hitl_explanation(
-            context_messages, context.runtime.trace_id
-        )
-
-        approval_id = str(uuid.uuid4())
-        return ActionRequestResponse(
-            approval_id=approval_id,
-            explanation=explanation,
-            tool_name=tool_name,
-            tool_args=tool_args,
-        )
-
     async def safe_tool_call(
         self, tool, tool_name: str, args: dict[str, Any], context: MMCPContext
     ):
@@ -312,9 +442,13 @@ class ReActLoop:
                 )
             return error_msg, True
 
-    def _get_response_model(self):
-        """Build the discriminated Union response model."""
-        from functools import reduce
+    def _get_reasoned_response_model(self):
+        """
+        Build the reasoned Union response model for single-turn HITL flow.
+
+        Returns Union[FinalResponse, ReasonedToolCall] where tool_call is
+        a Union of all available tool schemas.
+        """
         from inspect import isclass
 
         from pydantic import BaseModel
@@ -326,11 +460,8 @@ class ReActLoop:
                 if schema and isclass(schema) and issubclass(schema, BaseModel):
                     tool_schemas.append(schema)
 
-        if not tool_schemas:
-            return FinalResponse
-
-        ResponseModel = reduce(lambda acc, schema: acc | schema, tool_schemas, FinalResponse)
-        return ResponseModel
+        # Use get_reasoned_model to build the Union with ReasonedToolCall
+        return get_reasoned_model(tool_schemas)
 
     def _extract_error_message(self, error: Exception) -> str:
         """Extract user-friendly error message from exception."""

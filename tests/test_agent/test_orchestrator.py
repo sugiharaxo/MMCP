@@ -7,7 +7,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from app.agent.orchestrator import AgentOrchestrator
-from app.agent.schemas import FinalResponse
+from app.agent.schemas import FinalResponse, ReasonedToolCall
 
 
 @pytest.fixture
@@ -38,14 +38,24 @@ async def test_chat_final_response(orchestrator: AgentOrchestrator):
     """Test that chat returns a final response when LLM provides one."""
     response = FinalResponse(thought="I can answer this", answer="Test response")
 
-    # Mock the LLM interface method
-    with patch("app.agent.llm_interface.LLMInterface.get_agent_decision", new_callable=AsyncMock) as mock_llm:
-        mock_llm.return_value = response
+    # Mock the LLM interface methods
+    with (
+        patch(
+            "app.agent.llm_interface.LLMInterface.get_reasoned_decision", new_callable=AsyncMock
+        ) as mock_reasoned,
+        patch(
+            "app.agent.llm_interface.LLMInterface.generate_dialogue_response",
+            new_callable=AsyncMock,
+        ) as mock_dialogue,
+    ):
+        mock_reasoned.return_value = response
+        mock_dialogue.return_value = "Test response"
 
         result = await orchestrator.chat("Test message")
 
-        # Verify the mock was called
-        mock_llm.assert_called()
+        # Verify the mocks were called
+        mock_reasoned.assert_called()
+        mock_dialogue.assert_called()
         assert result == "Test response"
 
 
@@ -71,20 +81,34 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
     # Mock plugin settings (None for tools without settings) - stored by plugin_name
     orchestrator.loader._plugin_settings = {"test_plugin": None}
 
-    # First call: tool input schema, Second call: final response
+    # First call: reasoned tool call, Second call: final response
     tool_input = ToolInputSchema(param="value")
+    reasoned_tool_call = ReasonedToolCall(
+        rationale="Need to execute test tool", tool_call=tool_input
+    )
     final_response = FinalResponse(thought="Tool executed successfully", answer="Done")
 
     call_count = 0
-    async def mock_llm_decision(*args, **kwargs):
+
+    async def mock_reasoned_decision(*_args, **_kwargs):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return tool_input
+            return reasoned_tool_call
         else:
             return final_response
 
-    with patch("app.agent.llm_interface.LLMInterface.get_agent_decision", side_effect=mock_llm_decision):
+    with (
+        patch(
+            "app.agent.llm_interface.LLMInterface.get_reasoned_decision",
+            side_effect=mock_reasoned_decision,
+        ),
+        patch(
+            "app.agent.llm_interface.LLMInterface.generate_dialogue_response",
+            new_callable=AsyncMock,
+        ) as mock_dialogue,
+    ):
+        mock_dialogue.return_value = "Done"
         result = await orchestrator.chat("Test message")
 
         assert result == "Done"
@@ -98,6 +122,9 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
 async def test_chat_tool_not_found(orchestrator: AgentOrchestrator):
     """Test that chat handles missing tools gracefully."""
     tool_input = ToolInputSchema(param="value")
+    reasoned_tool_call = ReasonedToolCall(
+        rationale="Need to execute test tool", tool_call=tool_input
+    )
     final_response = FinalResponse(
         thought="Tool missing, responding anyway", answer="Tool not found, but continuing"
     )
@@ -105,15 +132,26 @@ async def test_chat_tool_not_found(orchestrator: AgentOrchestrator):
     orchestrator.loader.get_tool_by_schema.return_value = None
 
     call_count = 0
-    async def mock_llm_decision(*args, **kwargs):
+
+    async def mock_reasoned_decision(*_args, **_kwargs):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return tool_input
+            return reasoned_tool_call
         else:
             return final_response
 
-    with patch("app.agent.llm_interface.LLMInterface.get_agent_decision", side_effect=mock_llm_decision):
+    with (
+        patch(
+            "app.agent.llm_interface.LLMInterface.get_reasoned_decision",
+            side_effect=mock_reasoned_decision,
+        ),
+        patch(
+            "app.agent.llm_interface.LLMInterface.generate_dialogue_response",
+            new_callable=AsyncMock,
+        ) as mock_dialogue,
+    ):
+        mock_dialogue.return_value = "Tool not found, but continuing"
         result = await orchestrator.chat("Test message")
 
         assert "Tool not found" in result or "continuing" in result
@@ -123,14 +161,20 @@ async def test_chat_tool_not_found(orchestrator: AgentOrchestrator):
 async def test_chat_max_steps(orchestrator: AgentOrchestrator):
     """Test that chat stops after max steps."""
     tool_input = ToolInputSchema(param="value")
+    reasoned_tool_call = ReasonedToolCall(
+        rationale="Need to execute test tool", tool_call=tool_input
+    )
 
     mock_tool = MagicMock()
     mock_tool.name = "test_tool"
+    mock_tool.classification = "INTERNAL"  # Mark as internal to avoid HITL
     mock_tool.execute = AsyncMock(return_value={"result": "ok"})
     orchestrator.loader.get_tool_by_schema.return_value = mock_tool
 
-    with patch("app.agent.llm_interface.LLMInterface.get_agent_decision", new_callable=AsyncMock) as mock_llm:
-        mock_llm.return_value = tool_input  # Always return tool call
+    with patch(
+        "app.agent.llm_interface.LLMInterface.get_reasoned_decision", new_callable=AsyncMock
+    ) as mock_llm:
+        mock_llm.return_value = reasoned_tool_call  # Always return tool call
 
         result = await orchestrator.chat("Test message")
 
@@ -186,7 +230,7 @@ async def test_system_prompt_self_healing_filters_duplicates(orchestrator: Agent
         {"role": "system", "content": "Old system prompt"},
         {"role": "system", "content": "Another system prompt"},
         {"role": "user", "content": "Hello"},
-        {"role": "assistant", "content": "Hi there"}
+        {"role": "assistant", "content": "Hi there"},
     ]
 
     context = MMCPContext()
