@@ -890,8 +890,10 @@ Use tools when you need specific information or actions. When you have enough in
                     }
 
                     # Save to ChatSession with pending action
-                    if session_id:
-                        await self._save_session_with_pending_action(session_id, pending_data)
+                    # Save to ChatSession with pending action (requires session_id)
+                    if not session_id:
+                        raise ValueError("EXTERNAL tool requires session_id for HITL approval flow")
+                    await self._save_session_with_pending_action(session_id, pending_data)
 
                     # Return interruption response
                     return ActionRequestResponse(
