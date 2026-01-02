@@ -4,25 +4,26 @@ import asyncio
 import json
 import uuid
 from datetime import timezone
-from functools import reduce
-from inspect import isclass
-from typing import Union
+from typing import Any
 
-from pydantic import BaseModel
+import instructor
 from sqlalchemy import select
 
 from app.agent.context_manager import ContextManager
 from app.agent.history_manager import HistoryManager
 from app.agent.llm_interface import LLMInterface
 from app.agent.react_loop import ReActLoop
-from app.agent.schemas import ActionRequestResponse, FinalResponse
+from app.agent.schemas import ActionRequestResponse
 from app.agent.session_manager import SessionManager
 
 # ANP imports (EventBus for agent turn lock, AgentNotificationInjector for async notifications)
 from app.anp.agent_integration import AgentNotificationInjector
 from app.anp.event_bus import EventBus
+from app.core.config import settings
 from app.core.context import MMCPContext
+from app.core.errors import MMCPError
 from app.core.health import HealthMonitor
+from app.core.llm import get_instructor_mode
 from app.core.logger import logger
 from app.core.plugin_loader import PluginLoader
 
@@ -57,39 +58,6 @@ class AgentOrchestrator:
         self.event_bus = EventBus()
         self.notification_injector = AgentNotificationInjector(self.event_bus)
         self.context_manager = ContextManager(loader, self.notification_injector, self.health)
-
-    def _get_response_model(self) -> type:
-        """
-        Build the discriminated Union response model: Union[FinalResponse, ToolSchema1, ToolSchema2, ...]
-
-        The LLM will return one of these types directly. We use isinstance() to route.
-        """
-        tool_schemas = []
-        for tool in self.loader.tools.values():
-            if hasattr(tool, "input_schema"):
-                schema = tool.input_schema
-                # Verify it's actually a class before adding
-                if schema and isclass(schema) and issubclass(schema, BaseModel):
-                    tool_schemas.append(schema)
-                else:
-                    logger.warning(
-                        f"Tool '{tool.name}' has invalid input_schema: {schema}. "
-                        f"Expected a BaseModel subclass."
-                    )
-
-        if not tool_schemas:
-            # No tools available - can only return FinalResponse
-            return FinalResponse
-
-        # Build Union using typing.Union for dynamic construction in reduce()
-        # Note: Python automatically normalizes nested Unions (Union[Union[A, B], C] -> Union[A, B, C])
-        # We use typing.Union (not | operator) because:
-        # 1. The | operator cannot be used in reduce() lambda expressions
-        # 2. typing.Union is more explicit and compatible with Instructor/Pydantic
-        # 3. Instructor (via Pydantic) handles Union types correctly for discriminated unions
-        ResponseModel = reduce(lambda acc, schema: Union[acc, schema], tool_schemas, FinalResponse)  # noqa: UP007
-
-        return ResponseModel
 
     async def _emit_status(
         self,
@@ -140,8 +108,9 @@ class AgentOrchestrator:
                 if chat_session.pending_action.get("approval_id") != approval_id:
                     raise StaleApprovalError()
 
-                # Update history based on approval/denial
+                # Load history from database
                 history = chat_session.history.copy()
+
                 if not was_approved:
                     history.append(
                         {
@@ -154,28 +123,97 @@ class AgentOrchestrator:
                     pending_action = chat_session.pending_action
                     tool_name = pending_action["tool_name"]
                     tool_args = pending_action["tool_args"]
-                    tool_call_id = f"resumed-{approval_id}"
+                    # Determine instructor mode to format messages correctly
+                    instructor_mode = get_instructor_mode(settings.llm_model)
 
-                    # 1. RECONSTRUCT THE ASSISTANT INTENT
-                    # This tells the LLM: "You previously decided to call this tool"
-                    history.append(
-                        {
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": [
+                    # STRICT STATE PERSISTENCE: Extract exactly what the LLM gave us
+                    # No fallbacks, no magic strings - fail loudly if data is missing
+                    # Mode-aware extraction: Only extract tool_call_id for TOOLS mode
+                    if instructor_mode == instructor.Mode.TOOLS:
+                        tool_call_id = pending_action.get("tool_call_id")
+                        if not tool_call_id:
+                            # This should never happen in a healthy system
+                            raise MMCPError(
+                                "Protocol Corruption: Missing tool_call_id for resumed action in TOOLS mode. "
+                                "This indicates state persistence failure.",
+                                trace_id=trace_id,
+                            )
+                    else:
+                        # Mode.JSON: tool_call_id should be None (uses user role with OBSERVATION)
+                        tool_call_id = None
+
+                    # 1. VERIFY/RECONSTRUCT THE ASSISTANT INTENT
+                    # Check if the last message is already the correct assistant tool call
+                    # If not, append it. This prevents duplicate assistant messages.
+                    last_msg = history[-1] if history else None
+                    needs_assistant_msg = True
+
+                    if last_msg and last_msg.get("role") == "assistant":
+                        if instructor_mode == instructor.Mode.TOOLS:
+                            # SANITY CHECK: Verify the ID matches our persisted one
+                            # With strict state persistence, they should already match
+                            tool_calls = last_msg.get("tool_calls", [])
+                            if tool_calls and any(
+                                tc.get("id") == tool_call_id
+                                or (tc.get("function", {}).get("name") == tool_name)
+                                for tc in tool_calls
+                            ):
+                                needs_assistant_msg = False
+                                # Verify the ID matches our persisted one
+                                for tc in tool_calls:
+                                    if tc.get("function", {}).get("name") == tool_name:
+                                        if tc.get("id") != tool_call_id:
+                                            # State mismatch indicates protocol violation - fail loudly
+                                            raise MMCPError(
+                                                f"Protocol Corruption: History tool_call_id ({tc.get('id')}) "
+                                                f"does not match persisted ID ({tool_call_id}). "
+                                                f"This indicates state corruption and cannot be safely recovered.",
+                                                trace_id=trace_id,
+                                            )
+                                        break
+                        else:
+                            # Mode.JSON: Check if content matches
+                            content = last_msg.get("content", "")
+                            if content and "tool_call" in content and tool_name in content:
+                                needs_assistant_msg = False
+
+                    if needs_assistant_msg:
+                        # Append assistant message with tool call
+                        if instructor_mode == instructor.Mode.TOOLS:
+                            # Mode.TOOLS: Use native tool_calls format
+                            # DeepSeek requires content to be None (not missing) for tool_calls
+                            history.append(
                                 {
-                                    "id": tool_call_id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": tool_name,
-                                        "arguments": json.dumps(tool_args)
-                                        if isinstance(tool_args, dict)
-                                        else str(tool_args),
-                                    },
+                                    "role": "assistant",
+                                    "content": None,  # Explicitly set to None for DeepSeek
+                                    "tool_calls": [
+                                        {
+                                            "id": tool_call_id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": tool_name,
+                                                "arguments": json.dumps(tool_args)
+                                                if isinstance(tool_args, dict)
+                                                else str(tool_args),
+                                            },
+                                        }
+                                    ],
                                 }
-                            ],
-                        }
-                    )
+                            )
+                        else:
+                            # Mode.JSON: Use content-based format for local models
+                            history.append(
+                                {
+                                    "role": "assistant",
+                                    "content": json.dumps(
+                                        {
+                                            "type": "tool_call",
+                                            "tool": tool_name,
+                                            "arguments": tool_args,
+                                        }
+                                    ),
+                                }
+                            )
 
                     # 2. EXECUTE AND ADD RESULT
                     tool = self.loader.get_tool(tool_name)
@@ -191,12 +229,9 @@ class AgentOrchestrator:
                         tool, tool_name, tool_args, context
                     )
 
-                    history.append(
-                        {
-                            "role": "tool",
-                            "content": result,
-                            "tool_call_id": tool_call_id,
-                        }
+                    # Add result using mode-aware history manager
+                    self.history_manager.add_tool_result(
+                        history, tool_call_id, result, instructor_mode=instructor_mode
                     )
 
                 # Clear pending action and save
@@ -205,12 +240,13 @@ class AgentOrchestrator:
                 await db_session.commit()
 
             # Continue conversation
-            # Recursively call chat with empty input to let LLM process the tool result
-            return await self.chat(
-                user_input="",
+            # Pass the history we just modified to avoid reloading and overwriting changes
+            return await self._execute_chat_logic(
+                user_input=None,  # None for action resumption
                 session_id=session_id,
-                skip_session_load=False,  # Reload the updated history we just committed
+                skip_session_load=True,  # Skip load since we're passing history
                 trace_id=trace_id,
+                history=history,  # Pass the modified history
             )
 
     async def chat(
@@ -243,69 +279,106 @@ class AgentOrchestrator:
         )
 
         async with session_lock:
-            # Load session history
+            return await self._execute_chat_logic(
+                user_input=user_input,
+                session_id=session_id,
+                trace_id=trace_id,
+                skip_session_load=skip_session_load,
+            )
+
+    async def _execute_chat_logic(
+        self,
+        user_input: str | None,
+        session_id: str | None = None,
+        trace_id: str | None = None,
+        skip_session_load: bool = False,
+        history: list[dict[str, Any]] | None = None,
+    ) -> str | ActionRequestResponse:
+        """
+        Internal chat logic without lock acquisition.
+
+        This method contains the core chat processing logic. Lock acquisition
+        must be handled by the calling method (chat() or resume_action()) to
+        avoid non-reentrant deadlocks.
+
+        Args:
+            user_input: User input string (can be None for action resumption)
+            session_id: Optional session ID
+            trace_id: Optional trace ID
+            skip_session_load: If True, skip loading from session manager
+            history: Optional pre-loaded history. If provided, skips session load.
+        """
+        # Load session history
+        if history is not None:
+            # Use provided history, skip session load
+            pass
+        else:
+            # Load from session manager if needed
             history = (
                 await self.session_manager.load_session(session_id)
                 if (session_id and not skip_session_load)
                 else []
             )
 
-            # Prepare context
-            context = MMCPContext(trace_id=trace_id)
-            context.set_available_tools(self.loader.list_tools())
+        # Prepare context
+        context = MMCPContext(trace_id=trace_id)
+        context.set_available_tools(self.loader.list_tools())
+        # Only assemble context if user_input is provided (skip for action resumption)
+        if user_input is not None:
             await self.context_manager.assemble_llm_context(user_input, context)
 
-            # Set last turn time for notifications
-            from datetime import datetime
+        # Set last turn time for notifications
+        from datetime import datetime
 
-            self.notification_injector.set_last_turn_time(datetime.now(timezone.utc))
+        self.notification_injector.set_last_turn_time(datetime.now(timezone.utc))
 
-            # Global agent turn lock for causal serialization
-            async with self.event_bus.get_agent_turn_lock():
-                # Delegate to ReAct loop with system prompt
-                system_prompt = await self.context_manager.get_system_prompt(context)
+        # Global agent turn lock for causal serialization
+        async with self.event_bus.get_agent_turn_lock():
+            # Delegate to ReAct loop with system prompt
+            system_prompt = await self.context_manager.get_system_prompt(context)
 
-                # UNPACK TUPLE: Result and Updated History
-                result, updated_history = await self.react_loop.execute_turn(
-                    user_input, history, context, system_prompt, self.notification_injector
-                )
+            # UNPACK TUPLE: Result and Updated History
+            # Handle None user_input for action resumption (pass empty string to react loop)
+            react_user_input = user_input if user_input is not None else ""
+            result, updated_history = await self.react_loop.execute_turn(
+                react_user_input, history, context, system_prompt, self.notification_injector
+            )
 
-                # Handle Session Persistence
-                if session_id:
-                    if isinstance(result, str):
-                        # Standard response: Save updated history
-                        # Strip the System Prompt (index 0) before saving to DB
-                        db_history = (
-                            updated_history[1:]
-                            if updated_history and updated_history[0]["role"] == "system"
-                            else updated_history
-                        )
-                        await self.session_manager.save_session(session_id, db_history)
+            # Handle Session Persistence
+            if session_id:
+                if isinstance(result, str):
+                    # Standard response: Save updated history
+                    # Strip the System Prompt (index 0) before saving to DB
+                    db_history = (
+                        updated_history[1:]
+                        if updated_history and updated_history[0]["role"] == "system"
+                        else updated_history
+                    )
+                    await self.session_manager.save_session(session_id, db_history)
 
-                    elif isinstance(result, ActionRequestResponse):
-                        # HITL Request: Save session with pending action
-                        # Construct pending payload
-                        pending_data = {
-                            "approval_id": result.approval_id,
-                            "tool_name": result.tool_name,
-                            "tool_args": result.tool_args,
-                            "context": context.model_dump()
-                            if hasattr(context, "model_dump")
-                            else {},
-                        }
+                elif isinstance(result, ActionRequestResponse):
+                    # HITL Request: Save session with pending action
+                    # Construct pending payload
+                    pending_data = {
+                        "approval_id": result.approval_id,
+                        "tool_name": result.tool_name,
+                        "tool_args": result.tool_args,
+                        "tool_call_id": result.tool_call_id,
+                        "context": context.model_dump() if hasattr(context, "model_dump") else {},
+                    }
 
-                        # Strip system prompt for DB save
-                        db_history = (
-                            updated_history[1:]
-                            if updated_history and updated_history[0]["role"] == "system"
-                            else updated_history
-                        )
+                    # Strip system prompt for DB save
+                    db_history = (
+                        updated_history[1:]
+                        if updated_history and updated_history[0]["role"] == "system"
+                        else updated_history
+                    )
 
-                        await self.session_manager.save_session_with_pending_action(
-                            session_id, db_history, pending_data
-                        )
+                    await self.session_manager.save_session_with_pending_action(
+                        session_id, db_history, pending_data
+                    )
 
-                # Flush notification queue
-                await self.event_bus.flush_system_alert_queue()
+            # Flush notification queue
+            await self.event_bus.flush_system_alert_queue()
 
-                return result
+            return result

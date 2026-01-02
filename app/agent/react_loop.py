@@ -4,13 +4,23 @@ import asyncio
 import uuid
 from typing import Any
 
+import instructor
+
 from app.agent.history_manager import HistoryManager
 from app.agent.llm_interface import LLMInterface
-from app.agent.schemas import ActionRequestResponse, FinalResponse
+from app.agent.schemas import (
+    ActionRequestResponse,
+    FinalResponse,
+    ReasonedToolCall,
+    get_reasoned_model,
+)
+from app.core.config import settings
 from app.core.context import MMCPContext
 from app.core.errors import MMCPError, map_agent_error, map_provider_error
+from app.core.llm import get_instructor_mode
 from app.core.logger import logger
 from app.core.plugin_loader import PluginLoader
+from app.core.security import sanitize_explanation
 
 
 class ReActLoop:
@@ -47,8 +57,8 @@ class ReActLoop:
             session_history, system_prompt, user_input
         )
 
-        # Build the Union response model
-        ResponseModel = self._get_response_model()
+        # Build the reasoned Union response model (FinalResponse | ReasonedToolCall)
+        ResponseModel = self._get_reasoned_response_model()
 
         # ReAct loop: allow multiple reasoning steps
         max_steps = 5
@@ -61,17 +71,18 @@ class ReActLoop:
             context.increment_step()
             self.history_manager.trim_history(history)
 
-            # Get LLM decision
+            # Turn 1 (Reasoning): Single-turn reasoned decision
             try:
                 context.increment_llm_call()
                 if self.status_callback:
                     await self.status_callback(
                         "Thinking about next action...", context.runtime.trace_id, "thought"
                     )
-                response = await self.llm.get_agent_decision(
+                response, raw_completion = await self.llm.get_reasoned_decision(
                     history, ResponseModel, context.runtime.trace_id
                 )
                 llm_retry_count = 0
+
             except Exception as e:
                 # Handle errors with retry logic
                 (
@@ -96,13 +107,87 @@ class ReActLoop:
 
             # Route based on response type (outside try/except)
             if isinstance(response, FinalResponse):
+                # For FinalResponse: Do NOT use add_llm_message (which adds tool_calls metadata)
+                # Instead, _handle_final_response will use add_assistant_response to record
+                # the plain text answer, closing the tool-calling protocol for the next turn.
+                # Generate rich dialogue response using DialogueProfile
                 result = await self._handle_final_response(
                     response, history, context, notification_injector
                 )
                 return result, history
+            elif isinstance(response, ReasonedToolCall):
+                # For ReasonedToolCall: Extract tool_call_id and add LLM message to preserve
+                # tool_calls metadata for DeepSeek 1:1 pairing requirement
+                tool_call_id = None
+                instructor_mode = get_instructor_mode(settings.llm_model)
+
+                # CRITICAL: Add assistant message to history IMMEDIATELY before tool execution
+                # This preserves the tool_calls metadata for Mode.TOOLS compatibility
+                assistant_msg = raw_completion.choices[0].message
+                self.history_manager.add_llm_message(history, assistant_msg, instructor_mode)
+
+                # Extract tool_call_id if in TOOLS mode
+                # CRITICAL: Extract from raw_completion.choices[0].message.tool_calls[0].id
+                # for DeepSeek 1:1 pairing requirement
+                # STRICT STATE PERSISTENCE: If TOOLS mode, tool_call_id is mandatory
+                if instructor_mode == instructor.Mode.TOOLS:
+                    # If the LLM failed to give us an ID in TOOLS mode,
+                    # that is a system failure, not a scenario for a fallback.
+                    if not hasattr(raw_completion.choices[0].message, "tool_calls"):
+                        raise MMCPError(
+                            "Protocol Corruption: LLM response missing tool_calls in TOOLS mode",
+                            trace_id=context.runtime.trace_id,
+                        )
+                    tool_calls = raw_completion.choices[0].message.tool_calls
+                    if not tool_calls or len(tool_calls) == 0:
+                        raise MMCPError(
+                            "Protocol Corruption: LLM response has empty tool_calls in TOOLS mode",
+                            trace_id=context.runtime.trace_id,
+                        )
+                    # Extract first tool call ID (handles single tool call case)
+                    # For multiple tool calls, we use the first one to match the primary tool
+                    tool_call_id = tool_calls[0].id
+                    if not tool_call_id:
+                        raise MMCPError(
+                            "Protocol Corruption: tool_call missing ID in TOOLS mode",
+                            trace_id=context.runtime.trace_id,
+                        )
+                    if len(tool_calls) > 1:
+                        logger.debug(
+                            f"Multiple tool calls detected ({len(tool_calls)}), using first ID: {tool_call_id}",
+                            extra={"trace_id": context.runtime.trace_id},
+                        )
+                # Handle reasoned tool call (single-turn atomic consistency)
+                result = await self._handle_reasoned_tool_call(
+                    response, history, context, tool_call_id=tool_call_id
+                )
+                if isinstance(result, ActionRequestResponse):
+                    return result, history  # HITL interruption
+                elif isinstance(result, str):
+                    return result, history  # Circuit breaker or error response
+                # Continue loop with tool result in history
             else:
-                # It's a tool call
-                result = await self._handle_tool_call(response, history, context)
+                # Fallback: treat as regular tool call (for backward compatibility)
+                # Extract tool_call_id if in TOOLS mode (similar to ReasonedToolCall)
+                tool_call_id = None
+                instructor_mode = get_instructor_mode(settings.llm_model)
+
+                # Add LLM message to preserve tool_calls metadata
+                assistant_msg = raw_completion.choices[0].message
+                self.history_manager.add_llm_message(history, assistant_msg, instructor_mode)
+
+                if (
+                    instructor_mode == instructor.Mode.TOOLS
+                    and hasattr(raw_completion.choices[0].message, "tool_calls")
+                    and raw_completion.choices[0].message.tool_calls
+                ):
+                    tool_calls = raw_completion.choices[0].message.tool_calls
+                    if tool_calls and len(tool_calls) > 0:
+                        tool_call_id = tool_calls[0].id
+
+                result = await self._handle_tool_call(
+                    response, history, context, tool_call_id=tool_call_id
+                )
                 if isinstance(result, ActionRequestResponse):
                     return result, history  # HITL interruption
                 elif isinstance(result, str):
@@ -166,26 +251,72 @@ class ReActLoop:
         context: MMCPContext,
         notification_injector=None,
     ) -> str:
-        """Handle final response from LLM."""
-        self.history_manager.add_assistant_response(history, response.answer)
+        """
+        Handle final response from LLM reasoning phase.
 
+        If the reasoning phase returned a FinalResponse, we use the DialogueProfile
+        to generate a rich, conversational response to the user.
+        """
         # Process agent ACKs for asynchronous notifications
         if response.acknowledged_ids and notification_injector:
             user_id = "default"  # Single-user system for now
             await notification_injector.mark_agent_processed(response.acknowledged_ids, user_id)
 
-        context.log_inspection()
-        return response.answer
+        # Generate rich dialogue response using DialogueProfile
+        # Use the thought and answer from reasoning as context
+        dialogue_messages = history + [
+            {
+                "role": "system",
+                "content": f"Internal reasoning: {response.thought}\n\nGenerate a natural, helpful response to the user based on this reasoning.",
+            },
+            {"role": "user", "content": "Please provide your response."},
+        ]
 
-    async def _handle_tool_call(
-        self, response: Any, history: list[dict[str, Any]], context: MMCPContext
+        try:
+            dialogue_response = await self.llm.generate_dialogue_response(
+                dialogue_messages, context.runtime.trace_id
+            )
+            self.history_manager.add_assistant_response(history, dialogue_response)
+            context.log_inspection()
+            return dialogue_response
+        except Exception as e:
+            # Fallback to the answer from reasoning if dialogue generation fails
+            logger.warning(
+                f"Dialogue generation failed, using reasoning answer (trace_id={context.runtime.trace_id}): {e}",
+                extra={"trace_id": context.runtime.trace_id},
+            )
+            self.history_manager.add_assistant_response(history, response.answer)
+            context.log_inspection()
+            return response.answer
+
+    async def _handle_reasoned_tool_call(
+        self,
+        response: ReasonedToolCall,
+        history: list[dict[str, Any]],
+        context: MMCPContext,
+        tool_call_id: str | None = None,
     ) -> str | ActionRequestResponse | None:
-        """Handle tool call. Returns ActionRequestResponse for HITL or None to continue."""
-        tool = self.loader.get_tool_by_schema(type(response))
+        """
+        Handle reasoned tool call from single-turn reasoning phase.
+
+        Extracts the tool and its rationale, then routes based on classification:
+        - EXTERNAL: Sanitize rationale and return ActionRequestResponse for HITL
+        - INTERNAL: Log rationale for auditability and execute tool
+        """
+        tool_call = response.tool_call
+        rationale = response.rationale
+
+        # Extract tool from registry
+        tool = self.loader.get_tool_by_schema(type(tool_call))
         if not tool:
-            tool_name = type(response).__name__
+            tool_name = type(tool_call).__name__
             result = f"Error: Tool for schema '{tool_name}' not found."
-            self.history_manager.add_tool_result(history, f"error-{tool_name}", result)
+            self.history_manager.add_tool_result(
+                history,
+                f"error-{tool_name}",
+                result,
+                instructor_mode=get_instructor_mode(settings.llm_model),
+            )
             return None
 
         # Check if tool is in standby
@@ -193,15 +324,36 @@ class ReActLoop:
             plugin_name = tool.plugin_name
             config_error = self.loader._plugin_config_errors.get(plugin_name, "Setup required")
             result = f"Tool '{tool.name}' is on standby. {config_error}."
-            self.history_manager.add_tool_result(history, f"error-{tool.name}", result)
+            self.history_manager.add_tool_result(
+                history,
+                f"error-{tool.name}",
+                result,
+                instructor_mode=get_instructor_mode(settings.llm_model),
+            )
             return None
 
         # Prepare tool execution
-        tool_args = response.model_dump(mode="json")
+        tool_args = tool_call.model_dump(mode="json")
         tool_name = tool.name
 
         # Check classification
         if tool.classification == "EXTERNAL":
+            # Sanitize rationale to prevent injection attacks
+            sanitized_rationale = sanitize_explanation(rationale)
+
+            # Template-based fallback if rationale is missing or empty
+            if not sanitized_rationale or not sanitized_rationale.strip():
+                sanitized_rationale = (
+                    f"I'm requesting to use {tool_name} to proceed with your request."
+                )
+            # TODO Implement TTL (Time-To-Live) for HITL requests.
+            # Stale requests (> 24h for example) should be auto-expired to prevent database bloat
+            # and unintended actions from a shifted context.
+
+            # TODO Add 'Contextual Re-validation' for approvals older than 1 hour (example).
+            # If a user takes several hours to approve, the agent should perform
+            # a silent check (e.g., verify URL still works) before final execution.
+
             # TODO(ANP): Internal Turn Escalation - ANP Spec Section 6.1
             # When an EXTERNAL tool is invoked during an Internal Turn (triggered by ANP Channel C
             # with Target=AGENT), the protocol requires automatic promotion of Target→USER to ensure
@@ -216,10 +368,36 @@ class ReActLoop:
             # 4. Ensure user visibility is guaranteed per ANP spec Section 6.1.1
             #
             # See: docs/specs/anp-v1.0.md Section 6.1 "The Internal Turn Protection"
-            # Generate HITL request
-            return await self._generate_hitl_request(tool_name, tool_args, history, context)
+
+            # STRICT STATE PERSISTENCE: tool_call_id is mandatory for TOOLS mode
+            instructor_mode_check = get_instructor_mode(settings.llm_model)
+            if instructor_mode_check == instructor.Mode.TOOLS and not tool_call_id:
+                raise MMCPError(
+                    f"Protocol Corruption: Missing tool_call_id for EXTERNAL tool '{tool_name}' in TOOLS mode",
+                    trace_id=context.runtime.trace_id,
+                )
+
+            approval_id = str(uuid.uuid4())
+            return ActionRequestResponse(
+                approval_id=approval_id,
+                explanation=sanitized_rationale,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                tool_call_id=tool_call_id,
+            )
 
         # Execute internal tool
+        # Log rationale for auditability
+        logger.info(
+            f"Executing INTERNAL tool '{tool_name}' with rationale: {rationale} "
+            f"(trace_id={context.runtime.trace_id})",
+            extra={
+                "trace_id": context.runtime.trace_id,
+                "tool_name": tool_name,
+                "rationale": rationale,
+            },
+        )
+
         if self.status_callback:
             await self.status_callback(
                 f"Executing tool: {tool_name}", context.runtime.trace_id, "tool_start"
@@ -230,9 +408,11 @@ class ReActLoop:
                 f"Completed tool: {tool_name}", context.runtime.trace_id, "tool_end"
             )
 
-        # Add result to history
-        call_id = getattr(response, "id", f"internal-{uuid.uuid4()}")
-        self.history_manager.add_tool_result(history, call_id, result)
+        # Add result to history using provided tool_call_id or fallback
+        call_id = tool_call_id or getattr(tool_call, "id", f"internal-{uuid.uuid4()}")
+        self.history_manager.add_tool_result(
+            history, call_id, result, instructor_mode=get_instructor_mode(settings.llm_model)
+        )
 
         # Check for circuit breaker
         if is_error and context.is_tool_circuit_breaker_tripped(tool_name, threshold=3):
@@ -251,37 +431,104 @@ class ReActLoop:
 
         return None
 
-    async def _generate_hitl_request(
+    async def _handle_tool_call(
         self,
-        tool_name: str,
-        tool_args: dict[str, Any],
+        response: Any,
         history: list[dict[str, Any]],
         context: MMCPContext,
-    ) -> ActionRequestResponse:
-        """Generate HITL request for external tools."""
-        # Contextualization turn to get explanation
-        explanation_prompt = (
-            "You are about to execute an external tool that requires user approval. "
-            "You are currently in an interrupted state - the tool has NOT been executed yet. "
-            "Explain to the user what you are about to do in a friendly, contextual manner. "
-            "Do not mention the tool name literally - contextualize the action. "
-            "Make it clear this is an action you want to take with their permission. "
-            f"You are about to execute: {tool_name} with arguments: {tool_args}"
+        tool_call_id: str | None = None,
+    ) -> str | ActionRequestResponse | None:
+        """
+        Handle tool call (legacy method for backward compatibility).
+
+        This method is used when the response is not a ReasonedToolCall,
+        maintaining backward compatibility with the old flow.
+        """
+        tool = self.loader.get_tool_by_schema(type(response))
+        if not tool:
+            tool_name = type(response).__name__
+            result = f"Error: Tool for schema '{tool_name}' not found."
+            self.history_manager.add_tool_result(
+                history,
+                f"error-{tool_name}",
+                result,
+                instructor_mode=get_instructor_mode(settings.llm_model),
+            )
+            return None
+
+        # Check if tool is in standby
+        if tool.name in self.loader.standby_tools:
+            plugin_name = tool.plugin_name
+            config_error = self.loader._plugin_config_errors.get(plugin_name, "Setup required")
+            result = f"Tool '{tool.name}' is on standby. {config_error}."
+            self.history_manager.add_tool_result(
+                history,
+                f"error-{tool.name}",
+                result,
+                instructor_mode=get_instructor_mode(settings.llm_model),
+            )
+            return None
+
+        # Prepare tool execution
+        tool_args = response.model_dump(mode="json")
+        tool_name = tool.name
+
+        # Check classification
+        if tool.classification == "EXTERNAL":
+            # Template-based fallback for legacy flow
+            explanation = f"I'm requesting to use {tool_name} to proceed with your request."
+            sanitized_explanation = sanitize_explanation(explanation)
+
+            # STRICT STATE PERSISTENCE: tool_call_id is mandatory for TOOLS mode
+            instructor_mode = get_instructor_mode(settings.llm_model)
+            if instructor_mode == instructor.Mode.TOOLS and not tool_call_id:
+                raise MMCPError(
+                    f"Protocol Corruption: Missing tool_call_id for EXTERNAL tool '{tool_name}' in TOOLS mode",
+                    trace_id=context.runtime.trace_id,
+                )
+
+            approval_id = str(uuid.uuid4())
+            return ActionRequestResponse(
+                approval_id=approval_id,
+                explanation=sanitized_explanation,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                tool_call_id=tool_call_id,
+            )
+
+        # Execute internal tool
+        if self.status_callback:
+            await self.status_callback(
+                f"Executing tool: {tool_name}", context.runtime.trace_id, "tool_start"
+            )
+        result, is_error = await self.safe_tool_call(tool, tool_name, tool_args, context)
+        if self.status_callback:
+            await self.status_callback(
+                f"Completed tool: {tool_name}", context.runtime.trace_id, "tool_end"
+            )
+
+        # Add result to history using provided tool_call_id or fallback
+        call_id = tool_call_id or getattr(response, "id", f"internal-{uuid.uuid4()}")
+        self.history_manager.add_tool_result(
+            history, call_id, result, instructor_mode=get_instructor_mode(settings.llm_model)
         )
 
-        context_messages = history + [{"role": "system", "content": explanation_prompt}]
+        # Check for circuit breaker
+        if is_error and context.is_tool_circuit_breaker_tripped(tool_name, threshold=3):
+            failure_count = context.get_tool_failure_count(tool_name)
+            msg = f"I encountered a persistent issue with the {tool_name} tool. {result}"
+            logger.error(
+                f"Circuit breaker triggered for {tool_name} after {failure_count} failures "
+                f"(trace_id={context.runtime.trace_id})",
+                extra={
+                    "trace_id": context.runtime.trace_id,
+                    "tool_name": tool_name,
+                    "failure_count": failure_count,
+                },
+            )
+            return msg
 
-        explanation = await self.llm.generate_hitl_explanation(
-            context_messages, context.runtime.trace_id
-        )
-
-        approval_id = str(uuid.uuid4())
-        return ActionRequestResponse(
-            approval_id=approval_id,
-            explanation=explanation,
-            tool_name=tool_name,
-            tool_args=tool_args,
-        )
+        return None
 
     async def safe_tool_call(
         self, tool, tool_name: str, args: dict[str, Any], context: MMCPContext
@@ -312,9 +559,13 @@ class ReActLoop:
                 )
             return error_msg, True
 
-    def _get_response_model(self):
-        """Build the discriminated Union response model."""
-        from functools import reduce
+    def _get_reasoned_response_model(self):
+        """
+        Build the reasoned Union response model for single-turn HITL flow.
+
+        Returns Union[FinalResponse, ReasonedToolCall] where tool_call is
+        a Union of all available tool schemas.
+        """
         from inspect import isclass
 
         from pydantic import BaseModel
@@ -326,11 +577,8 @@ class ReActLoop:
                 if schema and isclass(schema) and issubclass(schema, BaseModel):
                     tool_schemas.append(schema)
 
-        if not tool_schemas:
-            return FinalResponse
-
-        ResponseModel = reduce(lambda acc, schema: acc | schema, tool_schemas, FinalResponse)
-        return ResponseModel
+        # Use get_reasoned_model to build the Union with ReasonedToolCall
+        return get_reasoned_model(tool_schemas)
 
     def _extract_error_message(self, error: Exception) -> str:
         """Extract user-friendly error message from exception."""

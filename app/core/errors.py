@@ -138,7 +138,18 @@ def map_provider_error(e: Exception, trace_id: str | None = None) -> MMCPError:
         )
 
     # Context window / token limit
-    if "context" in error_str or "token" in error_str or "length" in error_str:
+    # Match actual context window errors, not method names containing "context"
+    if (
+        "context window" in error_str
+        or "context length" in error_str
+        or "maximum context" in error_str
+        or "token limit" in error_str
+        or "token count" in error_str
+        or ("exceeds" in error_str
+            and ("token" in error_str or "length" in error_str))
+        or "too many tokens" in error_str
+        or "input too long" in error_str
+    ):
         logger.warning(f"Context/token limit: {e}")
         return ProviderError(
             "Request exceeds context window. Try a shorter conversation.",

@@ -150,6 +150,47 @@ class Settings(BaseSettings):
         self.data_dir = self.data_dir.resolve()
 
 
+class ReasoningProfile(BaseModel):
+    """
+    Profile for internal system steering (reasoning, tool selection, deterministic logic).
+
+    Low temperature and token count for focused, consistent decision-making.
+    """
+
+    temperature: float = Field(default=0.0, description="Temperature for reasoning calls")
+    max_tokens: int = Field(default=300, description="Maximum tokens for reasoning responses")
+    instructor_mode: str = Field(
+        default="tool_call",
+        description="Instructor mode: 'tool_call' (native tool calling), 'json' (JSON output), or 'md_json'",
+    )
+
+
+class DialogueProfile(BaseModel):
+    """
+    Profile for external human communication (helpfulness, natural language, summaries).
+
+    Higher temperature and token count for natural, conversational responses.
+    """
+
+    temperature: float = Field(default=0.7, description="Temperature for dialogue calls")
+    max_tokens: int = Field(default=2048, description="Maximum tokens for dialogue responses")
+
+
+class LLMProfile(BaseModel):
+    """
+    Complete LLM profile containing both reasoning and dialogue configurations.
+
+    Used for model-specific overrides. Falls back to default_profile if not specified.
+    """
+
+    reasoning: ReasoningProfile = Field(
+        default_factory=ReasoningProfile, description="Reasoning profile configuration"
+    )
+    dialogue: DialogueProfile = Field(
+        default_factory=DialogueProfile, description="Dialogue profile configuration"
+    )
+
+
 class CoreSettings(BaseModel):
     """
     Core settings shared across all plugins.
@@ -166,3 +207,10 @@ class CoreSettings(BaseModel):
 # Global settings instance
 # Import this in other modules: `from app.core.config import settings`
 settings = Settings()
+
+# Default LLM profile (used as fallback)
+default_profile = LLMProfile()
+
+# Model-specific profile overrides
+# Example: model_profiles["gemini/gemini-flash-latest"] = LLMProfile(...)
+model_profiles: dict[str, LLMProfile] = {}
