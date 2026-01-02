@@ -68,7 +68,7 @@ async def list_sessions():
     # For now, we can't easily track creation timestamps for existing sessions
     # In a real implementation, sessions would be stored in the database
     # For this MVP, we'll return session IDs without timestamps
-    active_sessions = list(session_manager.active_sessions.keys())
+    active_sessions = list(session_manager.active_sessions)
 
     return [
         SessionResponse(id=session_id, created_at=datetime.now(timezone.utc))
@@ -143,7 +143,7 @@ async def ack_endpoint(
     user_id = "default"  # Single-user system for now
 
     # Convert NotificationAck to dict format expected by NotificationDispatcher
-    ack_dict = {"event_id": ack.id, "lease_id": ack.lease_id}
+    ack_dict = {"event_id": ack.id, "lease_id": getattr(ack, 'lease_id', 1)}
     success = await notification_dispatcher.handle_ack(ack_dict, user_id)
 
     if success:
