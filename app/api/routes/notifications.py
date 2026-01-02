@@ -8,7 +8,16 @@ import json
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import JSONResponse
 from sqlalchemy import and_, select
 
@@ -18,7 +27,9 @@ from app.anp.models import EventLedger, EventStatus
 from app.anp.notification_dispatcher import NotificationDispatcher
 from app.anp.schemas import NotificationAck, NotificationResponse, SessionResponse
 from app.core.database import get_session
+from app.core.health import HealthMonitor
 from app.core.logger import logger
+from app.core.plugin_loader import PluginLoader
 from app.core.session_manager import SessionManager
 
 event_bus = EventBus()
@@ -26,6 +37,16 @@ notification_dispatcher = NotificationDispatcher()
 session_manager = SessionManager()
 
 router = APIRouter(prefix="/api/v1/notifications", tags=["notifications"])
+
+
+def get_plugin_loader(request: Request) -> PluginLoader:
+    """Dependency to get PluginLoader instance from app state."""
+    return request.app.state.loader
+
+
+def get_health_monitor(request: Request) -> HealthMonitor:
+    """Dependency to get HealthMonitor instance from app state."""
+    return request.app.state.health_monitor
 
 
 @router.post("/sessions", response_model=SessionResponse)
@@ -78,7 +99,11 @@ async def list_sessions():
 
 
 @router.post("/notifications/{event_id}/approve")
-async def approve_action(event_id: str):
+async def approve_action(
+    event_id: str,
+    loader: PluginLoader = Depends(get_plugin_loader),
+    health: HealthMonitor = Depends(get_health_monitor),
+):
     """
     Approve and execute a pending external tool action.
 
@@ -108,7 +133,7 @@ async def approve_action(event_id: str):
 
         # Use orchestrator to handle the resumption
         try:
-            orchestrator = AgentOrchestrator()
+            orchestrator = AgentOrchestrator(loader, health)
             final_response = await orchestrator.resume_action(
                 event_id=event_id, session_id=event.session_id, trace_id=f"resumed-{event_id}"
             )

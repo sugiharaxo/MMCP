@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.agent.orchestrator import AgentOrchestrator
+from app.agent.schemas import ActionRequestResponse
 from app.anp.event_bus import EventBus
 from app.anp.notification_dispatcher import NotificationDispatcher
 from app.anp.watchdog import WatchdogService
@@ -64,6 +65,7 @@ async def lifespan(_app: FastAPI):
 
     # Attach components to app state for dependency injection
     _app.state.loader = loader
+    _app.state.health_monitor = health_monitor
     _app.state.event_bus = event_bus
     _app.state.notification_dispatcher = notification_dispatcher
     _app.state.session_manager = session_manager
@@ -213,7 +215,9 @@ async def get_tools():
 
 
 @app.post("/api/v1/chat")
-async def chat_endpoint(message: str = Body(..., embed=True)) -> AgentResponse:
+async def chat_endpoint(
+    message: str = Body(..., embed=True),
+) -> AgentResponse | ActionRequestResponse:
     """
     The functional gateway to the agent.
 
@@ -233,11 +237,17 @@ async def chat_endpoint(message: str = Body(..., embed=True)) -> AgentResponse:
     try:
         # Orchestrator handles errors internally and feeds them back to LLM when possible
         # Fatal errors (config, auth) will be raised as MMCPError and caught by exception handler
-        response_text = await orchestrator.chat(message, trace_id=trace_id)
+        response = await orchestrator.chat(message, trace_id=trace_id)
 
+        # Check if this is an ActionRequestResponse (HITL interruption)
+        if isinstance(response, ActionRequestResponse):
+            # This is an interruption - return the action request data directly
+            return response
+
+        # Regular string response - wrap in AgentResponse
         return AgentResponse(
             success=True,
-            data=response_text,
+            data=response,
             trace_id=trace_id,
         )
     except MMCPError:

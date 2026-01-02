@@ -115,7 +115,7 @@ class EventBus:
             await session.commit()
             await session.refresh(event)
 
-            logger.info(f"Created notification: {event.id} (status={event.status.value})")
+            logger.info(f"Created notification: {event.id} (status={event.status})")
 
             # Route to appropriate channel
             await self._route_to_channel(session, event)
@@ -241,7 +241,7 @@ class EventBus:
         self,
         session: AsyncSession,
         event_id: str,
-        from_status: EventStatus,
+        from_status: EventStatus | str,
         to_status: EventStatus,
         expected_lease: int | None,
     ) -> bool:
@@ -251,13 +251,17 @@ class EventBus:
         Args:
             session: Database session
             event_id: Event ID
-            from_status: Expected current status
+            from_status: Expected current status (EventStatus enum or string)
             to_status: Target status
             expected_lease: Expected owner_lease (None = no check)
 
         Returns:
             True if transition succeeded, False otherwise
         """
+        # Normalize from_status to EventStatus enum (handles string from DB)
+        if isinstance(from_status, str):
+            from_status = EventStatus(from_status)
+
         # Validate transition (prevent terminal state changes)
         if from_status in [EventStatus.DELIVERED, EventStatus.FAILED]:
             logger.warning(

@@ -7,6 +7,7 @@ from functools import reduce
 from inspect import isclass
 from typing import Any, Union
 
+from litellm import acompletion
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -54,8 +55,8 @@ class AgentOrchestrator:
         self.history: list[dict] = []
         self.health = health or HealthMonitor()
         # ANP integration
-        event_bus = EventBus()
-        self.notification_injector = AgentNotificationInjector(event_bus)
+        self.event_bus = EventBus()
+        self.notification_injector = AgentNotificationInjector(self.event_bus)
         self._internal_turn = False
 
     async def _get_system_prompt(self, context: MMCPContext | None = None) -> str:
@@ -279,10 +280,7 @@ Use tools when you need specific information or actions. When you have enough in
 
             # Execute with per-provider timeout using PluginRuntime facade
             timeout_seconds = settings.context_per_provider_timeout_ms / 1000.0
-            plugin_runtime = self.loader.create_plugin_runtime()
-            result = await asyncio.wait_for(
-                provider.provide_context(plugin_runtime), timeout=timeout_seconds
-            )
+            result = await asyncio.wait_for(provider.provide_context(), timeout=timeout_seconds)
 
             # Extract data from ContextResponse
             data = result.data
@@ -506,7 +504,7 @@ Use tools when you need specific information or actions. When you have enough in
                 await self._load_session(session_id)
 
             # Get the tool and execute it
-            tool = self.loader.get_tool_by_name(tool_name)
+            tool = self.loader.get_tool(tool_name)
             if not tool:
                 raise ValueError(f"Tool '{tool_name}' not found")
 
@@ -764,7 +762,7 @@ Use tools when you need specific information or actions. When you have enough in
                     logger.debug(f"Tool '{tool_name}' is EXTERNAL, requiring user approval")
 
                     # Create ANP event for this action request
-                    event_id = await self.event_bus.emit_notification(
+                    event_id = await self.notification_injector.event_bus.emit_notification(
                         NotificationCreate(
                             content=f"Agent requests approval to execute: {tool_name}",
                             routing=RoutingFlags(
@@ -796,9 +794,7 @@ Use tools when you need specific information or actions. When you have enough in
                         {"role": "system", "content": explanation_prompt}
                     ]
 
-                    explanation_response = await self.llm.generate(
-                        context_messages, trace_id=trace_id
-                    )
+                    explanation_response = await self.generate(context_messages, trace_id=trace_id)
 
                     # Extract the explanation from the agent's response
                     if hasattr(explanation_response, "answer"):
@@ -905,3 +901,23 @@ Use tools when you need specific information or actions. When you have enough in
         finally:
             # ANP: Release agent turn lock
             agent_turn_lock.release()
+
+    async def generate(self, messages, trace_id=None):
+        """Generate text response from LLM."""
+        logger.info(
+            f"Generating LLM response (trace_id={trace_id})",
+            extra={"trace_id": trace_id} if trace_id else {},
+        )
+        response = await acompletion(
+            model=settings.llm_model,
+            messages=messages,
+            **({"api_key": settings.llm_api_key} if settings.llm_api_key else {}),
+            **({"base_url": settings.llm_base_url} if settings.llm_base_url else {}),
+        )
+
+        # Return object with answer attribute for compatibility
+        class TextResponse:
+            def __init__(self, answer):
+                self.answer = answer
+
+        return TextResponse(response.choices[0].message.content)
