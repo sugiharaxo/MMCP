@@ -2,6 +2,7 @@
 
 import asyncio
 import uuid
+from datetime import timezone
 from functools import reduce
 from inspect import isclass
 from typing import Any, Union
@@ -390,6 +391,14 @@ Use tools when you need specific information or actions. When you have enough in
             Tool result as string, or error message if execution failed
         """
         try:
+            # ANP: Check tool classification and promote EXTERNAL tools for user visibility
+            # Classification is a ClassVar with default "EXTERNAL" (safety-first per ANP spec)
+            if tool.classification == "EXTERNAL":
+                logger.debug(f"Tool '{tool_name}' is EXTERNAL, promoting for user visibility")
+                await self.notification_injector.promote_external_tool()
+            else:
+                logger.debug(f"Tool '{tool_name}' is INTERNAL, no user notification required")
+
             # Execute tool with validated arguments
             # Tool already has paths, system, and settings injected via __init__ (self.paths, self.system, self.settings)
             result = await asyncio.wait_for(tool.execute(**args), timeout=30.0)
@@ -464,7 +473,7 @@ Use tools when you need specific information or actions. When you have enough in
             # Store last_turn_time for shared awareness queries
             from datetime import datetime
 
-            self.notification_injector.set_last_turn_time(datetime.utcnow())
+            self.notification_injector.set_last_turn_time(datetime.now(timezone.utc))
 
             # 2. Reconstruct history: PIN system at top, keep ALL other history
             # We only filter out 'system' to prevent duplicates.

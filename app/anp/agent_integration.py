@@ -193,8 +193,8 @@ class AgentNotificationInjector:
                     )
                     continue
 
-                # Mark as delivered
-                success = await self.event_bus.mark_delivered(event_id)
+                # Mark as delivered with lease validation
+                success = await self.event_bus.mark_delivered(event_id, event.owner_lease)
                 if success:
                     count += 1
                     logger.debug(f"Agent processed notification: {event_id}")

@@ -5,7 +5,7 @@ Handles routing logic, state machine, deduplication, lease-based fencing, and es
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -18,6 +18,7 @@ from app.core.database import get_session
 from app.core.logger import logger
 
 if TYPE_CHECKING:
+    from app.anp.notification_dispatcher import NotificationDispatcher
     from app.core.session_manager import SessionManager
 
 # Default TTL for Channel C events (5 minutes)
@@ -55,6 +56,7 @@ class EventBus:
         self._system_alert_queue: asyncio.Queue[EventLedger] = asyncio.Queue()
         self._agent_turn_lock = asyncio.Lock()
         self._session_manager: SessionManager | None = None
+        self._notification_dispatcher: NotificationDispatcher | None = None
 
         self._initialized = True
         logger.info("EventBus initialized")
@@ -62,6 +64,10 @@ class EventBus:
     def set_session_manager(self, session_manager: "SessionManager") -> None:
         """Set the session manager for session validation."""
         self._session_manager = session_manager
+
+    def set_notification_dispatcher(self, dispatcher: "NotificationDispatcher") -> None:
+        """Set the notification dispatcher for delivery."""
+        self._notification_dispatcher = dispatcher
 
     async def emit_notification(self, notification: NotificationCreate) -> str:
         """
@@ -207,13 +213,25 @@ class EventBus:
             await self._transition_state(
                 session, event.id, EventStatus.PENDING, EventStatus.DISPATCHED, None
             )
-            # WebSocketManager will handle actual delivery
+
+            # Send notification immediately if dispatcher is available
+            if self._notification_dispatcher:
+                success = await self._notification_dispatcher.send_notification(event)
+                if not success:
+                    logger.warning(
+                        f"Failed to deliver notification {event.id} (no active connection)"
+                    )
+            else:
+                logger.warning(f"No notification dispatcher configured for event {event.id}")
+
             logger.debug(f"Routed to Channel {'A' if is_channel_a else 'B'}: {event.id}")
 
         elif is_channel_c:
             # Channel C: Agent context (set TTL if not provided)
             if not event.delivery_deadline:
-                event.delivery_deadline = datetime.utcnow() + timedelta(seconds=DEFAULT_TTL_SECONDS)
+                event.delivery_deadline = datetime.now(timezone.utc) + timedelta(
+                    seconds=DEFAULT_TTL_SECONDS
+                )
             await self._transition_state(
                 session, event.id, EventStatus.PENDING, EventStatus.DISPATCHED, None
             )
@@ -314,7 +332,7 @@ class EventBus:
                 stmt = (
                     update(EventLedger)
                     .where(EventLedger.id == event_id)
-                    .values(ack_at=datetime.utcnow())
+                    .values(ack_at=datetime.now(timezone.utc))
                 )
                 await session.execute(stmt)
                 await session.commit()
@@ -366,7 +384,7 @@ class EventBus:
         """
         async with get_session() as session:
             # Query expired events in PENDING/DISPATCHED
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             stmt = select(EventLedger).where(
                 and_(
                     EventLedger.delivery_deadline < now,

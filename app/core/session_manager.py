@@ -4,9 +4,11 @@ Session Manager - MMCP Core Infrastructure.
 Session tracking infrastructure that supports ANP protocol by providing
 session lifecycle management and validation. Not part of ANP spec itself,
 but enables ANP's Address=SESSION functionality.
+
+Sessions represent open chat conversations. They exist until explicitly
+deleted when the conversation ends.
 """
 
-from datetime import datetime, timedelta
 from typing import ClassVar
 from uuid import uuid4
 
@@ -17,9 +19,8 @@ class SessionManager:
     """
     Session tracking infrastructure for MMCP.
 
-    Provides session lifecycle management to support ANP's Address=SESSION
-    functionality. Tracks active sessions and their last activity timestamps
-    to enable session expiration promotion in the ANP protocol.
+    Manages chat session lifecycles for ANP's Address=SESSION functionality.
+    Sessions represent open conversations and exist until explicitly deleted.
 
     For now, single-user system (user_id = "default").
     Future: Extend to multi-user when auth is added.
@@ -39,74 +40,44 @@ class SessionManager:
         if self._initialized:
             return
 
-        # session_id → last_activity timestamp
-        self.active_sessions: dict[str, datetime] = {}
+        # Set of active session IDs (representing open chats)
+        self.active_sessions: set[str] = set()
         self._initialized = True
         logger.info("SessionManager initialized")
 
     def create_session(self) -> str:
         """
-        Generate new session ID and store timestamp.
+        Create a new chat session.
 
         Returns:
             New session ID (UUID string)
         """
         session_id = str(uuid4())
-        self.active_sessions[session_id] = datetime.utcnow()
+        self.active_sessions.add(session_id)
         logger.debug(f"Created session: {session_id}")
         return session_id
 
-    def is_session_active(self, session_id: str, threshold_hours: int = 24) -> bool:
+    def is_session_active(self, session_id: str) -> bool:
         """
-        Check if session exists and is recent.
+        Check if session exists (i.e., chat is still open).
 
         Args:
             session_id: Session ID to check
-            threshold_hours: Hours before session expires (default: 24)
 
         Returns:
-            True if session is active, False otherwise
+            True if session exists, False otherwise
         """
-        if session_id not in self.active_sessions:
-            return False
+        return session_id in self.active_sessions
 
-        last_activity = self.active_sessions[session_id]
-        age = datetime.utcnow() - last_activity
-
-        if age > timedelta(hours=threshold_hours):
-            # Session expired, remove it
-            del self.active_sessions[session_id]
-            logger.debug(f"Session expired: {session_id}")
-            return False
-
-        return True
-
-    def update_session_activity(self, session_id: str) -> None:
-        """Update last activity timestamp for session."""
-        if session_id in self.active_sessions:
-            self.active_sessions[session_id] = datetime.utcnow()
-
-    def expire_old_sessions(self, threshold_hours: int = 24) -> int:
+    def delete_session(self, session_id: str) -> None:
         """
-        Cleanup sessions older than threshold.
+        Delete a session (called when chat closes).
 
         Args:
-            threshold_hours: Hours before session expires (default: 24)
-
-        Returns:
-            Number of sessions expired
+            session_id: Session ID to delete
         """
-        now = datetime.utcnow()
-        expired = [
-            sid
-            for sid, last_activity in self.active_sessions.items()
-            if (now - last_activity) > timedelta(hours=threshold_hours)
-        ]
-
-        for sid in expired:
-            del self.active_sessions[sid]
-
-        if expired:
-            logger.debug(f"Expired {len(expired)} old session(s)")
-
-        return len(expired)
+        if session_id in self.active_sessions:
+            self.active_sessions.remove(session_id)
+            logger.debug(f"Deleted session: {session_id}")
+        else:
+            logger.warning(f"Attempted to delete non-existent session: {session_id}")

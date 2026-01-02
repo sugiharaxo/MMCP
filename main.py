@@ -10,8 +10,8 @@ from fastapi.staticfiles import StaticFiles
 
 from app.agent.orchestrator import AgentOrchestrator
 from app.anp.event_bus import EventBus
+from app.anp.notification_dispatcher import NotificationDispatcher
 from app.anp.watchdog import WatchdogService
-from app.anp.websocket_manager import WebSocketManager
 from app.api.routes import notifications as notifications_routes
 from app.api.routes import settings as settings_routes
 from app.core.auth import ensure_admin_token
@@ -41,11 +41,12 @@ loader = PluginLoader(settings.plugin_dir)
 health_monitor = HealthMonitor()
 orchestrator = AgentOrchestrator(loader, health_monitor)
 event_bus = EventBus()
-websocket_manager = WebSocketManager()
+notification_dispatcher = NotificationDispatcher()
 watchdog_service = WatchdogService(event_bus)
 session_manager = SessionManager()
 event_bus.set_session_manager(session_manager)
-websocket_manager.set_event_bus(event_bus)
+notification_dispatcher.set_event_bus(event_bus)
+event_bus.set_notification_dispatcher(notification_dispatcher)
 
 
 @asynccontextmanager
@@ -64,7 +65,7 @@ async def lifespan(_app: FastAPI):
     # Attach components to app state for dependency injection
     _app.state.loader = loader
     _app.state.event_bus = event_bus
-    _app.state.websocket_manager = websocket_manager
+    _app.state.notification_dispatcher = notification_dispatcher
     _app.state.session_manager = session_manager
 
     # Start ANP watchdog service
