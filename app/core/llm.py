@@ -43,7 +43,9 @@ def get_instructor_mode(model_name: str) -> instructor.Mode:
 client = instructor.from_litellm(acompletion, mode=get_instructor_mode(settings.llm_model))
 
 
-async def get_agent_decision(messages: list[dict], response_model: type[Any], trace_id: str | None = None) -> Any:
+async def get_agent_decision(
+    messages: list[dict], response_model: type[Any], trace_id: str | None = None
+) -> Any:
     """
     Sends the conversation history to the LLM and gets a structured decision.
 
@@ -93,7 +95,13 @@ async def get_agent_decision(messages: list[dict], response_model: type[Any], tr
         logger.error(
             f"LLM call failed (trace_id={trace_id}): {type(e).__name__}: {e}",
             exc_info=True,
-            extra={"model": settings.llm_model, "message_count": len(messages), "trace_id": trace_id} if trace_id else {"model": settings.llm_model, "message_count": len(messages)},
+            extra={
+                "model": settings.llm_model,
+                "message_count": len(messages),
+                "trace_id": trace_id,
+            }
+            if trace_id
+            else {"model": settings.llm_model, "message_count": len(messages)},
         )
         # Re-raise to be handled by orchestrator's error mapping
         raise
