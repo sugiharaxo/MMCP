@@ -859,6 +859,12 @@ Use tools when you need specific information or actions. When you have enough in
                 # Use mode='json' to ensure SecretStr fields are masked (not stringified as SecretStr('**********'))
                 tool_args = response.model_dump(mode="json")
 
+                # Validate session_id requirement for EXTERNAL tools
+                if tool.classification == "EXTERNAL" and not session_id:
+                    raise MMCPError(
+                        "EXTERNAL tools require an active session_id for HITL processing."
+                    )
+
                 # Check tool classification - EXTERNAL tools require user approval
                 if tool.classification == "EXTERNAL":
                     logger.debug(f"Tool '{tool_name}' is EXTERNAL, requiring user approval")
@@ -926,7 +932,7 @@ Use tools when you need specific information or actions. When you have enough in
 
                 result, is_error = await self.safe_tool_call(tool, tool_name, tool_args, context)
                 self._emit_status(
-                    f"[Step {step + 1}] Observation: {result}",
+                    f"[Step {step + 1}] Tool result: {result}",
                     trace_id,
                     status_type="tool_end",
                 )
@@ -950,16 +956,18 @@ Use tools when you need specific information or actions. When you have enough in
                     await event_bus.flush_system_alert_queue()
                     return msg
 
+                # Consistent Tool Result Format: Use role: "tool" instead of "Observation" strings
+                # tool_call_id is either provided by the LLM or generated for internal execution
+                call_id = getattr(response, "id", f"internal-{uuid.uuid4()}")
+
                 # Feed tool result back into history for next iteration
                 self._trim_history()
                 # This allows the LLM to process errors and adapt its strategy
                 self.history.append(
-                    {
-                        "role": "tool",
-                        "content": result,
-                        "tool_call_id": f"success-{tool_name}-{context.runtime.trace_id}",
-                    }
+                    {"role": "tool", "tool_call_id": call_id, "content": str(result)}
                 )
+
+                logger.info(f"Step {step + 1} completed. Tool role result added to history.")
                 # Loop continues so LLM can process the result
 
             # If we've exhausted max steps, return a message

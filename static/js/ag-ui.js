@@ -148,27 +148,19 @@ class AGUI {
 
   addMessage(type, content) {
     const messageDiv = document.createElement("div");
-    messageDiv.className = `flex ${
-      type === "user" ? "justify-end" : "justify-start"
-    }`;
+    messageDiv.className = `flex ${type === "user" ? "justify-end" : "justify-start"} mb-4`;
 
     const bubble = document.createElement("div");
-    bubble.className = `chat-bubble rounded-lg px-4 py-2 ${
-      type === "user"
-        ? "bg-blue-500 text-white"
-        : type === "agent"
-        ? "bg-gray-200 text-gray-800"
-        : type === "system"
-        ? "bg-yellow-100 text-yellow-800 text-sm"
-        : "bg-red-100 text-red-800 text-sm"
-    }`;
+    // Cleaner logic for Tailwind classes
+    const colorClasses = {
+        user: "bg-blue-600 text-white",
+        agent: "bg-gray-700 text-gray-100",
+        system: "bg-amber-100 text-amber-900 text-xs italic",
+        error: "bg-red-100 text-red-800 text-xs font-mono"
+    };
 
-    if (type === "system" || type === "error") {
-      bubble.textContent = content;
-    } else {
-    } else {
-      bubble.textContent = content;
-    }
+    bubble.className = `chat-bubble max-w-[80%] rounded-lg px-4 py-2 ${colorClasses[type] || colorClasses.agent}`;
+    bubble.textContent = content;
 
     messageDiv.appendChild(bubble);
     this.messages.appendChild(messageDiv);
