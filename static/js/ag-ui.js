@@ -163,10 +163,9 @@ class AGUI {
         : "bg-red-100 text-red-800 text-sm"
     }`;
 
-    if (type === "system") {
-      bubble.innerHTML = `${content}`;
-    } else if (type === "error") {
-      bubble.innerHTML = `${content}`;
+    if (type === "system" || type === "error") {
+      bubble.textContent = content;
+    } else {
     } else {
       bubble.textContent = content;
     }
