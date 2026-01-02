@@ -210,43 +210,107 @@ class AGUI {
   async approveAction() {
     if (!this.pendingAction) return;
 
-    try {
-      this.addMessage("user", `Approved: ${this.pendingAction.tool_name}`);
+    // Capture what we need locally BEFORE clearing state
+    const approvalId = this.pendingAction.approval_id;
+    const toolName = this.pendingAction.tool_name;
+    const pendingActionSnapshot = this.pendingAction;
 
-      const response = await fetch(
-        `/api/v1/notifications/notifications/${this.pendingAction.event_id}/approve`,
-        {
-          method: "POST",
-        }
-      );
+    // Now it is safe to hide the modal and clear the global pendingAction
+    this.hideActionModal();
+
+    try {
+      const response = await fetch("/api/v1/chat/respond", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: this.currentSessionId,
+          approval_id: approvalId,
+          decision: "approve",
+        }),
+      });
 
       if (response.ok) {
         const result = await response.json();
+        // Show approval message only after successful API call
+        this.addMessage("user", `Approved: ${toolName}`);
         this.addMessage("agent", result.response);
+        // No need to set this.pendingAction = null here, hideActionModal did it
       } else {
+        // Re-open modal on API error so user can try again
+        this.showActionModal(pendingActionSnapshot);
         const error = await response.json();
         this.addMessage(
           "error",
-          `Approval failed: ${error.detail || "Unknown error"}`
+          `Approval failed: ${
+            error.detail || "Unknown error"
+          }. Please try again.`
         );
       }
     } catch (error) {
       console.error("Approval error:", error);
-      this.addMessage("error", "Failed to approve action");
-    }
-
-    this.hideActionModal();
-  }
-
-  denyAction() {
-    if (this.pendingAction) {
-      this.addMessage("user", `Denied: ${this.pendingAction.tool_name}`);
+      // Re-open modal on network error so user can try again
+      this.showActionModal(pendingActionSnapshot);
       this.addMessage(
-        "system",
-        "Action denied. Agent will continue with alternative approach."
+        "error",
+        "Network error: Failed to approve action. Please check your connection and try again."
       );
     }
-    this.hideActionModal();
+  }
+
+  async denyAction() {
+    if (!this.pendingAction) return;
+
+    // Capture what we need locally BEFORE clearing state
+    const approvalId = this.pendingAction.approval_id;
+    const toolName = this.pendingAction.tool_name;
+    const pendingActionSnapshot = this.pendingAction;
+
+    // Disable buttons to prevent multiple clicks
+    const approveBtn = document.getElementById("approve-action");
+    const denyBtn = document.getElementById("deny-action");
+    approveBtn.disabled = true;
+    denyBtn.disabled = true;
+    denyBtn.textContent = "Processing...";
+
+    try {
+      const response = await fetch("/api/v1/chat/respond", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: this.currentSessionId,
+          approval_id: approvalId,
+          decision: "deny",
+        }),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        // Show denial message only after successful API call
+        this.addMessage("user", `Denied: ${toolName}`);
+        this.addMessage("agent", result.response);
+        this.hideActionModal();
+      } else {
+        // Re-enable buttons on API error so user can try again
+        approveBtn.disabled = false;
+        denyBtn.disabled = false;
+        denyBtn.textContent = "Deny";
+        const error = await response.json();
+        this.addMessage(
+          "error",
+          `Denial failed: ${error.detail || "Unknown error"}. Please try again.`
+        );
+      }
+    } catch (error) {
+      console.error("Denial error:", error);
+      // Re-enable buttons on network error so user can try again
+      approveBtn.disabled = false;
+      denyBtn.disabled = false;
+      denyBtn.textContent = "Deny";
+      this.addMessage(
+        "error",
+        "Network error: Failed to deny action. Please check your connection and try again."
+      );
+    }
   }
 
   hideActionModal() {

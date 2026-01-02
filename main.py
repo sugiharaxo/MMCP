@@ -3,16 +3,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import Body, FastAPI, Request, status
+from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.agent.orchestrator import AgentOrchestrator
-from app.agent.schemas import ActionRequestResponse
 from app.anp.event_bus import EventBus
 from app.anp.notification_dispatcher import NotificationDispatcher
 from app.anp.watchdog import WatchdogService
+from app.api.routes import chat as chat_routes
 from app.api.routes import notifications as notifications_routes
 from app.api.routes import settings as settings_routes
 from app.core.auth import ensure_admin_token
@@ -66,6 +66,7 @@ async def lifespan(_app: FastAPI):
     # Attach components to app state for dependency injection
     _app.state.loader = loader
     _app.state.health_monitor = health_monitor
+    _app.state.orchestrator = orchestrator
     _app.state.event_bus = event_bus
     _app.state.notification_dispatcher = notification_dispatcher
     _app.state.session_manager = session_manager
@@ -191,6 +192,7 @@ async def general_exception_handler(_request: Request, exc: Exception) -> JSONRe
 
 # --- API Endpoints ---
 
+app.include_router(chat_routes.router)
 app.include_router(settings_routes.router)
 app.include_router(notifications_routes.router)
 
@@ -214,54 +216,7 @@ async def get_tools():
     return loader.list_tools()
 
 
-@app.post("/api/v1/chat")
-async def chat_endpoint(
-    message: str = Body(..., embed=True),
-) -> AgentResponse | ActionRequestResponse:
-    """
-    The functional gateway to the agent.
-
-    Sends a user message to the agent orchestrator and returns a structured response.
-    Errors are handled by exception handlers and returned as structured AgentResponse.
-
-    Args:
-        message: The user's message
-        request: FastAPI request object (for trace_id extraction if needed)
-
-    Returns:
-        AgentResponse with success/error structure
-    """
-    # Generate trace_id for this request
-    trace_id = str(uuid.uuid4())
-
-    try:
-        # Orchestrator handles errors internally and feeds them back to LLM when possible
-        # Fatal errors (config, auth) will be raised as MMCPError and caught by exception handler
-        response = await orchestrator.chat(message, trace_id=trace_id)
-
-        # Check if this is an ActionRequestResponse (HITL interruption)
-        if isinstance(response, ActionRequestResponse):
-            # This is an interruption - return the action request data directly
-            return response
-
-        # Regular string response - wrap in AgentResponse
-        return AgentResponse(
-            success=True,
-            data=response,
-            trace_id=trace_id,
-        )
-    except MMCPError:
-        # Re-raise MMCPErrors to be handled by exception handler
-        raise
-    except Exception as e:
-        # Unexpected error - wrap and re-raise
-        # This should rarely happen as orchestrator handles most errors
-        logger.error(
-            f"Unexpected error in chat endpoint (trace_id={trace_id}): {e}",
-            exc_info=True,
-            extra={"trace_id": trace_id},
-        )
-        raise
+# Chat endpoint is now handled by app/api/routes/chat.py router
 
 
 # --- UI / Static Files ---

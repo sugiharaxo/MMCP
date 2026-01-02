@@ -10,8 +10,6 @@ from typing import Annotated
 
 from fastapi import (
     APIRouter,
-    Depends,
-    HTTPException,
     Query,
     Request,
     WebSocket,
@@ -47,6 +45,11 @@ def get_plugin_loader(request: Request) -> PluginLoader:
 def get_health_monitor(request: Request) -> HealthMonitor:
     """Dependency to get HealthMonitor instance from app state."""
     return request.app.state.health_monitor
+
+
+def get_orchestrator(request: Request) -> AgentOrchestrator:
+    """Dependency to get AgentOrchestrator instance from app state."""
+    return request.app.state.orchestrator
 
 
 @router.post("/sessions", response_model=SessionResponse)
@@ -96,53 +99,6 @@ async def list_sessions():
         SessionResponse(id=session_id, created_at=datetime.now(timezone.utc))
         for session_id in active_sessions
     ]
-
-
-@router.post("/notifications/{event_id}/approve")
-async def approve_action(
-    event_id: str,
-    loader: PluginLoader = Depends(get_plugin_loader),
-    health: HealthMonitor = Depends(get_health_monitor),
-):
-    """
-    Approve and execute a pending external tool action.
-
-    Retrieves the frozen state, executes the tool, and resumes the agent conversation.
-    """
-    user_id = "default"  # Single-user system for now
-
-    async with get_session() as session:
-        # Verify the event exists and belongs to the user
-        stmt = select(EventLedger).where(EventLedger.id == event_id)
-        result = await session.execute(stmt)
-        event = result.scalar_one_or_none()
-
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
-
-        if event.user_id != user_id:
-            raise HTTPException(status_code=403, detail="Access denied")
-
-        if not event.pending_action_data:
-            raise HTTPException(status_code=400, detail="No pending action for this event")
-
-        # Mark event as delivered (tool approved)
-        success = await event_bus.mark_delivered(event_id)
-        if not success:
-            raise HTTPException(status_code=400, detail="Failed to approve action")
-
-        # Use orchestrator to handle the resumption
-        try:
-            orchestrator = AgentOrchestrator(loader, health)
-            final_response = await orchestrator.resume_action(
-                event_id=event_id, session_id=event.session_id, trace_id=f"resumed-{event_id}"
-            )
-
-            return {"status": "success", "response": final_response}
-
-        except Exception as e:
-            logger.error(f"Failed to resume conversation: {e}")
-            raise HTTPException(status_code=500, detail="Failed to resume conversation") from e
 
 
 @router.websocket("/ws")
