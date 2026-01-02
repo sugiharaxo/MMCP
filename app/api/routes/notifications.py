@@ -142,7 +142,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 and_(
                     EventLedger.status == EventStatus.DISPATCHED,
                     EventLedger.user_id == user_id,
-                    EventLedger.routing["handler"].astext == "system",  # Only SYSTEM notifications
+                    EventLedger.routing["handler"].as_string()
+                    == "system",  # Only SYSTEM notifications
                 )
             )
             result = await session.execute(stmt)
