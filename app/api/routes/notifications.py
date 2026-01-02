@@ -14,8 +14,8 @@ from sqlalchemy import and_, select
 
 from app.anp.event_bus import EventBus
 from app.anp.models import EventLedger, EventStatus
-from app.anp.schemas import NotificationAck, NotificationResponse, SessionCreate, SessionResponse
 from app.anp.notification_dispatcher import NotificationDispatcher
+from app.anp.schemas import NotificationAck, NotificationResponse, SessionCreate, SessionResponse
 from app.core.database import get_session
 from app.core.logger import logger
 from app.core.session_manager import SessionManager
@@ -40,11 +40,7 @@ async def create_session(session_data: SessionCreate):
     session_id = session_manager.create_session()
 
     # Return session info
-    from datetime import datetime
-    return SessionResponse(
-        id=session_id,
-        created_at=datetime.now(timezone.utc)
-    )
+    return SessionResponse(id=session_id, created_at=datetime.now(timezone.utc))
 
 
 @router.delete("/sessions/{session_id}")
@@ -74,7 +70,6 @@ async def list_sessions():
     # For this MVP, we'll return session IDs without timestamps
     active_sessions = list(session_manager.active_sessions.keys())
 
-    from datetime import datetime
     return [
         SessionResponse(id=session_id, created_at=datetime.now(timezone.utc))
         for session_id in active_sessions
