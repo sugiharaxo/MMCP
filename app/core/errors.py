@@ -77,6 +77,17 @@ class ConfigurationError(MMCPError):
         self.config_key = config_key
 
 
+class StaleApprovalError(MMCPError):
+    """Approval ID mismatch or stale approval attempt."""
+
+    def __init__(
+        self,
+        message: str = "Approval ID mismatch - action may have been overwritten",
+        trace_id: str | None = None,
+    ):
+        super().__init__(message, retryable=False, trace_id=trace_id)
+
+
 # --- Error Mapping Utilities ---
 
 

@@ -8,16 +8,26 @@ import json
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import (
+    APIRouter,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import JSONResponse
 from sqlalchemy import and_, select
 
+from app.agent.orchestrator import AgentOrchestrator
 from app.anp.event_bus import EventBus
 from app.anp.models import EventLedger, EventStatus
 from app.anp.notification_dispatcher import NotificationDispatcher
-from app.anp.schemas import NotificationAck, NotificationResponse, SessionCreate, SessionResponse
+from app.anp.schemas import NotificationAck, NotificationResponse, SessionResponse
 from app.core.database import get_session
+from app.core.health import HealthMonitor
 from app.core.logger import logger
+from app.core.plugin_loader import PluginLoader
 from app.core.session_manager import SessionManager
 
 event_bus = EventBus()
@@ -27,15 +37,30 @@ session_manager = SessionManager()
 router = APIRouter(prefix="/api/v1/notifications", tags=["notifications"])
 
 
+def get_plugin_loader(request: Request) -> PluginLoader:
+    """Dependency to get PluginLoader instance from app state."""
+    return request.app.state.loader
+
+
+def get_health_monitor(request: Request) -> HealthMonitor:
+    """Dependency to get HealthMonitor instance from app state."""
+    return request.app.state.health_monitor
+
+
+def get_orchestrator(request: Request) -> AgentOrchestrator:
+    """Dependency to get AgentOrchestrator instance from app state."""
+    return request.app.state.orchestrator
+
+
 @router.post("/sessions", response_model=SessionResponse)
-async def create_session(session_data: SessionCreate):
+async def create_session():
     """
     Create a new chat session.
 
     Sessions represent persistent chat conversations.
     They exist until explicitly deleted.
     """
-    user_id = "default"  # Single-user system for now
+    # user_id = "default"  # Single-user system for now - reserved for future use
 
     session_id = session_manager.create_session()
 
@@ -50,7 +75,7 @@ async def delete_session(session_id: str):
 
     This permanently removes the session and any associated context.
     """
-    user_id = "default"  # Single-user system for now
+    # user_id = "default"  # Single-user system for now - reserved for future use
 
     session_manager.delete_session(session_id)
     return {"status": "ok", "message": f"Session {session_id} deleted"}
@@ -63,7 +88,7 @@ async def list_sessions():
 
     Returns sessions that exist (i.e., chats that haven't been deleted).
     """
-    user_id = "default"  # Single-user system for now
+    # user_id = "default"  # Single-user system for now - reserved for future use
 
     # For now, we can't easily track creation timestamps for existing sessions
     # In a real implementation, sessions would be stored in the database
@@ -98,7 +123,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 and_(
                     EventLedger.status == EventStatus.DISPATCHED,
                     EventLedger.user_id == user_id,
-                    EventLedger.routing["handler"].astext == "system",  # Only SYSTEM notifications
+                    EventLedger.routing["handler"].as_string()
+                    == "system",  # Only SYSTEM notifications
                 )
             )
             result = await session.execute(stmt)
@@ -140,11 +166,11 @@ async def ack_endpoint(
 
     Useful for clients that don't support WebSockets.
     """
-    user_id = "default"  # Single-user system for now
+    # user_id = "default"  # Single-user system for now - reserved for future use
 
     # Convert NotificationAck to dict format expected by NotificationDispatcher
-    ack_dict = {"event_id": ack.id, "lease_id": getattr(ack, 'lease_id', 1)}
-    success = await notification_dispatcher.handle_ack(ack_dict, user_id)
+    ack_dict = {"event_id": ack.id, "lease_id": getattr(ack, "lease_id", 1)}
+    success = await notification_dispatcher.handle_ack(ack_dict, "default")
 
     if success:
         return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "ok", "id": ack.id})

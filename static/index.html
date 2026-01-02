@@ -3,234 +3,127 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MMCP - Modular Media Control Plane</title>
+    <title>MMCP</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="static/js/ag-ui.js"></script>
     <style>
-      /* Custom scrollbar for chat */
-      .chat-container::-webkit-scrollbar {
-        width: 6px;
+      .chat-bubble {
+        max-width: 70%;
+        word-wrap: break-word;
       }
-      .chat-container::-webkit-scrollbar-track {
-        background: #1f2937;
+      .scrollbar-hide {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
       }
-      .chat-container::-webkit-scrollbar-thumb {
-        background: #4b5563;
-        border-radius: 3px;
-      }
-      .chat-container::-webkit-scrollbar-thumb:hover {
-        background: #6b7280;
+      .scrollbar-hide::-webkit-scrollbar {
+        display: none;
       }
     </style>
   </head>
-  <body class="bg-gray-900 text-gray-100">
-    <div class="flex h-screen">
-      <!-- Sidebar -->
-      <aside
-        class="w-64 bg-gray-800 border-r border-gray-700 p-4 flex flex-col"
+  <body class="bg-gray-100 h-screen flex flex-col">
+    <!-- Header -->
+    <header class="bg-blue-600 text-white p-4 shadow-lg">
+      <h1 class="text-xl font-bold">MMCP AG-UI</h1>
+      <p class="text-sm opacity-90">Agentic Interface with Human-in-the-Loop</p>
+    </header>
+
+    <!-- Chat Container -->
+    <div class="flex-1 flex flex-col max-w-4xl mx-auto w-full">
+      <!-- Session Selector -->
+      <div class="bg-white border-b p-4">
+        <div class="flex items-center space-x-4">
+          <label class="font-medium">Session:</label>
+          <select id="session-select" class="border rounded px-3 py-1">
+            <option value="">New Session</option>
+          </select>
+          <button
+            id="new-session-btn"
+            class="bg-green-500 text-white px-3 py-1 rounded hover:bg-green-600"
+          >
+            New Chat
+          </button>
+          <div class="flex-1"></div>
+          <div id="connection-status" class="text-sm text-gray-600">
+            Disconnected
+          </div>
+        </div>
+      </div>
+
+      <!-- Messages Container -->
+      <div
+        id="messages"
+        class="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-hide"
       >
-        <h1 class="text-2xl font-bold mb-6 text-blue-400">MMCP</h1>
+        <!-- Messages will be added here -->
+      </div>
 
-        <!-- System Status -->
-        <div class="mb-6">
-          <h2 class="text-sm font-semibold text-gray-400 mb-3">
-            System Status
-          </h2>
-          <div id="status-indicators" class="space-y-2">
-            <div class="flex items-center justify-between">
-              <span class="text-sm">LLM</span>
-              <span
-                id="llm-status"
-                class="w-2 h-2 rounded-full bg-gray-600"
-              ></span>
+      <!-- Action Request Modal (Hidden by default) -->
+      <div
+        id="action-modal"
+        class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-50"
+      >
+        <div class="bg-white rounded-lg p-6 max-w-lg w-full mx-4">
+          <div class="flex items-center mb-4">
+            <div class="bg-red-100 rounded-full p-2 mr-3">
+              <svg
+                class="w-6 h-6 text-red-600"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"
+                ></path>
+              </svg>
             </div>
-            <!-- Plugin status indicators will be added dynamically -->
+            <h3 class="text-lg font-bold text-gray-900">
+              Agent Action Requires Approval
+            </h3>
           </div>
-        </div>
 
-        <!-- Plugins -->
-        <div class="mb-6">
-          <h2 class="text-sm font-semibold text-gray-400 mb-3">
-            Loaded Plugins
-          </h2>
-          <ul id="plugins-list" class="text-sm space-y-1 text-gray-300">
-            <li class="text-gray-500">Loading...</li>
-          </ul>
-        </div>
-
-        <!-- Info -->
-        <div class="mt-auto text-xs text-gray-500">
-          <p>v0.1.0</p>
-          <p class="mt-1">Modular Media Control Plane</p>
-        </div>
-      </aside>
-
-      <!-- Main Chat Area -->
-      <main class="flex-1 flex flex-col">
-        <!-- Chat Header -->
-        <header class="bg-gray-800 border-b border-gray-700 p-4">
-          <h2 class="text-lg font-semibold">Chat</h2>
-        </header>
-
-        <!-- Chat Messages -->
-        <div
-          id="chat-messages"
-          class="chat-container flex-1 overflow-y-auto p-4 space-y-4"
-        >
-          <div class="bg-gray-800 rounded-lg p-4 max-w-3xl">
-            <p class="text-gray-300">
-              Welcome to MMCP! Ask me about movies, TV shows, or media metadata.
-            </p>
+          <div id="action-content" class="mb-6">
+            <!-- Action details will be populated here -->
           </div>
-        </div>
 
-        <!-- Input Area -->
-        <div class="bg-gray-800 border-t border-gray-700 p-4">
-          <form id="chat-form" class="flex gap-2">
-            <input
-              type="text"
-              id="message-input"
-              placeholder="Type your message..."
-              class="flex-1 bg-gray-700 text-gray-100 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              autocomplete="off"
-            />
+          <div class="flex space-x-3">
             <button
-              type="submit"
-              id="send-button"
-              class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              id="deny-action"
+              class="flex-1 bg-gray-300 text-gray-700 px-4 py-2 rounded hover:bg-gray-400"
             >
-              Send
+              Deny
             </button>
-          </form>
+            <button
+              id="approve-action"
+              class="flex-1 bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700"
+            >
+              Approve Action
+            </button>
+          </div>
         </div>
-      </main>
+      </div>
+
+      <!-- Input Area -->
+      <div class="bg-white border-t p-4">
+        <div class="flex space-x-2">
+          <input
+            id="message-input"
+            type="text"
+            placeholder="Type your message..."
+            class="flex-1 border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            disabled
+          />
+          <button
+            id="send-btn"
+            class="bg-blue-500 text-white px-6 py-2 rounded-lg hover:bg-blue-600 disabled:bg-gray-300"
+            disabled
+          >
+            Send
+          </button>
+        </div>
+      </div>
     </div>
-
-    <script>
-      // State
-      let isLoading = false;
-
-      // DOM Elements
-      const chatMessages = document.getElementById("chat-messages");
-      const chatForm = document.getElementById("chat-form");
-      const messageInput = document.getElementById("message-input");
-      const sendButton = document.getElementById("send-button");
-      const llmStatus = document.getElementById("llm-status");
-      const pluginsList = document.getElementById("plugins-list");
-
-      // Load system status on page load
-      async function loadStatus() {
-        try {
-          const response = await fetch("/api/v1/status");
-          const data = await response.json();
-
-          // Update LLM status
-          llmStatus.className = data.llm_configured
-            ? "w-2 h-2 rounded-full bg-green-500"
-            : "w-2 h-2 rounded-full bg-red-500";
-
-          // Clear existing plugin indicators
-          const existingIndicators =
-            document.querySelectorAll(".plugin-status");
-          existingIndicators.forEach((indicator) => indicator.remove());
-
-          // Add dynamic plugin status indicators
-          const statusContainer = document.getElementById("status-indicators");
-          for (const [pluginName, status] of Object.entries(data.plugins)) {
-            const indicator = document.createElement("div");
-            indicator.className =
-              "flex items-center justify-between plugin-status";
-
-            const serviceNameSpan = document.createElement("span");
-            serviceNameSpan.className = "text-sm";
-            serviceNameSpan.textContent = status.service_name;
-
-            const statusSpan = document.createElement("span");
-            statusSpan.className = `w-2 h-2 rounded-full ${
-              status.is_available ? "bg-green-500" : "bg-red-500"
-            }`;
-
-            indicator.appendChild(serviceNameSpan);
-            indicator.appendChild(statusSpan);
-            statusContainer.appendChild(indicator);
-          }
-
-          // Update plugins list
-          if (data.loaded_plugins && data.loaded_plugins.length > 0) {
-            pluginsList.innerHTML = data.loaded_plugins
-              .map((plugin) => `<li class="text-gray-300">${plugin}</li>`)
-              .join("");
-          } else {
-            pluginsList.innerHTML =
-              '<li class="text-gray-500">No plugins loaded</li>';
-          }
-        } catch (error) {
-          console.error("Failed to load status:", error);
-        }
-      }
-
-      // Add message to chat
-      function addMessage(content, isUser = false) {
-        const messageDiv = document.createElement("div");
-        messageDiv.className = `flex ${
-          isUser ? "justify-end" : "justify-start"
-        }`;
-
-        const bubbleDiv = document.createElement("div");
-        bubbleDiv.className = `rounded-lg p-4 max-w-3xl ${
-          isUser ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-100"
-        }`;
-        bubbleDiv.textContent = content;
-
-        messageDiv.appendChild(bubbleDiv);
-        chatMessages.appendChild(messageDiv);
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-      }
-
-      // Send message
-      async function sendMessage(message) {
-        if (!message.trim() || isLoading) return;
-
-        isLoading = true;
-        sendButton.disabled = true;
-        addMessage(message, true);
-        messageInput.value = "";
-
-        try {
-          const response = await fetch("/api/v1/chat", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ message }),
-          });
-
-          if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-          }
-
-          const data = await response.json();
-          addMessage(data.data || "No response received.");
-        } catch (error) {
-          console.error("Error sending message:", error);
-          addMessage("Sorry, I encountered an error. Please try again.");
-        } finally {
-          isLoading = false;
-          sendButton.disabled = false;
-          messageInput.focus();
-        }
-      }
-
-      // Form submission
-      chatForm.addEventListener("submit", (e) => {
-        e.preventDefault();
-        const message = messageInput.value.trim();
-        if (message) {
-          sendMessage(message);
-        }
-      });
-
-      // Load status on page load
-      loadStatus();
-    </script>
   </body>
 </html>

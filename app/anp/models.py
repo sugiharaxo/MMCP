@@ -49,6 +49,9 @@ class EventLedger(Base):
     # Agent instructions (stored as JSON)
     agent_instructions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
+    # Pending action data for HITL (stored as JSON)
+    pending_action_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     # State machine
     status: Mapped[EventStatus] = mapped_column(
         String(20), nullable=False, default=EventStatus.PENDING, index=True
@@ -73,6 +76,36 @@ class EventLedger(Base):
             f"<EventLedger(id={self.id!r}, status={self.status.value}, "
             f"user_id={self.user_id!r}, session_id={self.session_id!r})>"
         )
+
+
+class ChatSession(Base):
+    """
+    Chat session persistence for stateful conversations.
+
+    Stores conversation history and state for HITL interruptions.
+    """
+
+    __tablename__ = "chat_sessions"
+
+    # Primary key (same as session_id)
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+
+    # Conversation history (stored as JSON)
+    history: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+
+    # Pending action for conversational HITL (stored as JSON)
+    pending_action: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    def __repr__(self) -> str:
+        return f"<ChatSession(id={self.id!r}, history_length={len(self.history)})>"
 
 
 # Composite indexes for performance
