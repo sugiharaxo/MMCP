@@ -10,7 +10,6 @@ from fastapi.staticfiles import StaticFiles
 
 from app.agent.orchestrator import AgentOrchestrator
 from app.anp.event_bus import EventBus
-from app.anp.session_manager import SessionManager
 from app.anp.watchdog import WatchdogService
 from app.anp.websocket_manager import WebSocketManager
 from app.api.routes import notifications as notifications_routes
@@ -31,6 +30,7 @@ from app.core.errors import (
 from app.core.health import HealthMonitor
 from app.core.logger import logger
 from app.core.plugin_loader import PluginLoader
+from app.core.session_manager import SessionManager
 
 BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"

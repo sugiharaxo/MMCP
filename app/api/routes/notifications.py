@@ -14,10 +14,10 @@ from sqlalchemy import and_, select
 from app.anp.event_bus import EventBus
 from app.anp.models import EventLedger, EventStatus
 from app.anp.schemas import NotificationAck, NotificationResponse
-from app.anp.session_manager import SessionManager
 from app.anp.websocket_manager import WebSocketManager
 from app.core.database import get_session
 from app.core.logger import logger
+from app.core.session_manager import SessionManager
 
 event_bus = EventBus()
 websocket_manager = WebSocketManager()

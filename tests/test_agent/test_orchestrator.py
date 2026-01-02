@@ -21,7 +21,7 @@ def mock_loader():
 
 
 # Define a test tool input schema for testing
-class TestToolInput(BaseModel):
+class ToolInputSchema(BaseModel):
     """Test tool input schema."""
 
     param: str = Field(..., description="Test parameter")
@@ -70,7 +70,7 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
     orchestrator.loader._plugin_settings = {"test_plugin": None}
 
     # First call: tool input schema, Second call: final response
-    tool_input = TestToolInput(param="value")
+    tool_input = ToolInputSchema(param="value")
     final_response = FinalResponse(thought="Tool executed successfully", answer="Done")
 
     with patch("app.agent.orchestrator.get_agent_decision", new_callable=AsyncMock) as mock_llm:
@@ -88,7 +88,7 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
 @pytest.mark.asyncio
 async def test_chat_tool_not_found(orchestrator: AgentOrchestrator):
     """Test that chat handles missing tools gracefully."""
-    tool_input = TestToolInput(param="value")
+    tool_input = ToolInputSchema(param="value")
     final_response = FinalResponse(
         thought="Tool missing, responding anyway", answer="Tool not found, but continuing"
     )
@@ -106,7 +106,7 @@ async def test_chat_tool_not_found(orchestrator: AgentOrchestrator):
 @pytest.mark.asyncio
 async def test_chat_max_steps(orchestrator: AgentOrchestrator):
     """Test that chat stops after max steps."""
-    tool_input = TestToolInput(param="value")
+    tool_input = ToolInputSchema(param="value")
 
     mock_tool = MagicMock()
     mock_tool.name = "test_tool"
