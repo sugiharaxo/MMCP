@@ -26,9 +26,8 @@ class MockContextProvider:
     def context_key(self) -> str:
         return self._context_key
 
-    async def provide_context(self, context) -> ContextResponse:
+    async def provide_context(self) -> ContextResponse:
         """Simulate provider execution with optional delay and failure."""
-        _ = context  # Not used by test provider
         if self._delay > 0:
             await asyncio.sleep(self._delay)
 
@@ -212,8 +211,7 @@ class TestContextAssembly:
             def context_key(self) -> str:
                 return "large_provider"
 
-            async def provide_context(self, context) -> ContextResponse:
-                _ = context  # Not used by test provider
+            async def provide_context(self) -> ContextResponse:
                 # Generate data larger than max_chars_per_provider
                 large_data = {"items": ["x" * 1000] * 10}  # ~10k chars
                 return ContextResponse(
