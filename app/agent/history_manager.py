@@ -2,6 +2,8 @@
 
 from typing import Any
 
+import instructor
+
 from app.core.config import settings
 from app.core.logger import logger
 
@@ -66,10 +68,42 @@ class HistoryManager:
         history.append({"role": "assistant", "content": content})
 
     def add_tool_result(
-        self, history: list[dict[str, Any]], tool_call_id: str, result: str
+        self,
+        history: list[dict[str, Any]],
+        tool_call_id: str,
+        result: str,
+        instructor_mode: instructor.Mode | None = None,
     ) -> None:
-        """Add tool execution result to history."""
-        history.append({"role": "tool", "tool_call_id": tool_call_id, "content": str(result)})
+        """
+        Add tool execution result to history.
+
+        Mode-aware routing:
+        - Mode.TOOLS: Uses role="tool" with tool_call_id (native tool calling format)
+        - Mode.JSON: Uses role="user" with OBSERVATION prefix (for local models that don't support tool role)
+
+        Args:
+            history: History list to append to
+            tool_call_id: Tool call identifier (may be generated UUID for JSON mode)
+            result: Tool execution result
+            instructor_mode: Instructor mode to determine message format
+        """
+        if instructor_mode is None:
+            # Auto-detect mode if not provided
+            from app.core.llm import get_instructor_mode
+
+            instructor_mode = get_instructor_mode(settings.llm_model)
+
+        if instructor_mode == instructor.Mode.TOOLS:
+            # Native tool calling format (OpenAI, Gemini, Claude, DeepSeek)
+            history.append({"role": "tool", "tool_call_id": tool_call_id, "content": str(result)})
+        else:
+            # JSON mode (Ollama/local models) - use user role with prefix
+            history.append(
+                {
+                    "role": "user",
+                    "content": f"OBSERVATION: {str(result)}",
+                }
+            )
 
     def add_error_message(self, history: list[dict[str, Any]], error_message: str) -> None:
         """Add error message to history for LLM correction."""
@@ -79,3 +113,47 @@ class HistoryManager:
                 "content": f"Error: {error_message} Please provide a valid response.",
             }
         )
+
+    def add_llm_message(
+        self,
+        history: list[dict[str, Any]],
+        completion_message: Any,
+        instructor_mode: instructor.Mode,
+    ) -> None:
+        """
+        Add LLM completion message to history, handling mode-specific formatting.
+
+        Converts raw completion message to history dict format, preserving
+        tool_calls metadata for Mode.TOOLS compatibility.
+
+        Args:
+            history: History list to append to
+            completion_message: Message object from LLM completion
+            instructor_mode: Instructor mode to determine message format
+        """
+        assistant_dict = {
+            "role": "assistant",
+            "content": completion_message.content,
+        }
+
+        # If using Mode.TOOLS, preserve tool_calls structure
+        if (
+            instructor_mode == instructor.Mode.TOOLS
+            and hasattr(completion_message, "tool_calls")
+            and completion_message.tool_calls
+        ):
+            assistant_dict["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in completion_message.tool_calls
+            ]
+            # Set content to None for tool calls (OpenAI format)
+            assistant_dict["content"] = None
+
+        history.append(assistant_dict)

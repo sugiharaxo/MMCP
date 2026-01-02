@@ -4,6 +4,8 @@ import asyncio
 import uuid
 from typing import Any
 
+import instructor
+
 from app.agent.history_manager import HistoryManager
 from app.agent.llm_interface import LLMInterface
 from app.agent.schemas import (
@@ -12,8 +14,10 @@ from app.agent.schemas import (
     ReasonedToolCall,
     get_reasoned_model,
 )
+from app.core.config import settings
 from app.core.context import MMCPContext
 from app.core.errors import MMCPError, map_agent_error, map_provider_error
+from app.core.llm import get_instructor_mode
 from app.core.logger import logger
 from app.core.plugin_loader import PluginLoader
 from app.core.security import sanitize_explanation
@@ -74,10 +78,19 @@ class ReActLoop:
                     await self.status_callback(
                         "Thinking about next action...", context.runtime.trace_id, "thought"
                     )
-                response = await self.llm.get_reasoned_decision(
+                response, raw_completion = await self.llm.get_reasoned_decision(
                     history, ResponseModel, context.runtime.trace_id
                 )
                 llm_retry_count = 0
+
+                # CRITICAL: Add assistant message to history IMMEDIATELY before tool execution
+                # This preserves the tool_calls metadata for Mode.TOOLS compatibility
+                assistant_msg = raw_completion.choices[0].message
+                instructor_mode = get_instructor_mode(settings.llm_model)
+
+                # Use helper method to add LLM message to history
+                self.history_manager.add_llm_message(history, assistant_msg, instructor_mode)
+
             except Exception as e:
                 # Handle errors with retry logic
                 (
@@ -101,6 +114,16 @@ class ReActLoop:
                     return error_msg, history
 
             # Route based on response type (outside try/except)
+            # Extract tool_call_id if in TOOLS mode
+            tool_call_id = None
+            instructor_mode = get_instructor_mode(settings.llm_model)
+            if instructor_mode == instructor.Mode.TOOLS and hasattr(
+                raw_completion.choices[0].message, "tool_calls"
+            ):
+                tool_calls = raw_completion.choices[0].message.tool_calls
+                if tool_calls and len(tool_calls) > 0:
+                    tool_call_id = tool_calls[0].id
+
             if isinstance(response, FinalResponse):
                 # Generate rich dialogue response using DialogueProfile
                 result = await self._handle_final_response(
@@ -109,7 +132,9 @@ class ReActLoop:
                 return result, history
             elif isinstance(response, ReasonedToolCall):
                 # Handle reasoned tool call (single-turn atomic consistency)
-                result = await self._handle_reasoned_tool_call(response, history, context)
+                result = await self._handle_reasoned_tool_call(
+                    response, history, context, tool_call_id=tool_call_id
+                )
                 if isinstance(result, ActionRequestResponse):
                     return result, history  # HITL interruption
                 elif isinstance(result, str):
@@ -117,7 +142,9 @@ class ReActLoop:
                 # Continue loop with tool result in history
             else:
                 # Fallback: treat as regular tool call (for backward compatibility)
-                result = await self._handle_tool_call(response, history, context)
+                result = await self._handle_tool_call(
+                    response, history, context, tool_call_id=tool_call_id
+                )
                 if isinstance(result, ActionRequestResponse):
                     return result, history  # HITL interruption
                 elif isinstance(result, str):
@@ -224,6 +251,7 @@ class ReActLoop:
         response: ReasonedToolCall,
         history: list[dict[str, Any]],
         context: MMCPContext,
+        tool_call_id: str | None = None,
     ) -> str | ActionRequestResponse | None:
         """
         Handle reasoned tool call from single-turn reasoning phase.
@@ -240,7 +268,12 @@ class ReActLoop:
         if not tool:
             tool_name = type(tool_call).__name__
             result = f"Error: Tool for schema '{tool_name}' not found."
-            self.history_manager.add_tool_result(history, f"error-{tool_name}", result)
+            self.history_manager.add_tool_result(
+                history,
+                f"error-{tool_name}",
+                result,
+                instructor_mode=get_instructor_mode(settings.llm_model),
+            )
             return None
 
         # Check if tool is in standby
@@ -248,7 +281,12 @@ class ReActLoop:
             plugin_name = tool.plugin_name
             config_error = self.loader._plugin_config_errors.get(plugin_name, "Setup required")
             result = f"Tool '{tool.name}' is on standby. {config_error}."
-            self.history_manager.add_tool_result(history, f"error-{tool.name}", result)
+            self.history_manager.add_tool_result(
+                history,
+                f"error-{tool.name}",
+                result,
+                instructor_mode=get_instructor_mode(settings.llm_model),
+            )
             return None
 
         # Prepare tool execution
@@ -318,9 +356,11 @@ class ReActLoop:
                 f"Completed tool: {tool_name}", context.runtime.trace_id, "tool_end"
             )
 
-        # Add result to history
-        call_id = getattr(tool_call, "id", f"internal-{uuid.uuid4()}")
-        self.history_manager.add_tool_result(history, call_id, result)
+        # Add result to history using provided tool_call_id or fallback
+        call_id = tool_call_id or getattr(tool_call, "id", f"internal-{uuid.uuid4()}")
+        self.history_manager.add_tool_result(
+            history, call_id, result, instructor_mode=get_instructor_mode(settings.llm_model)
+        )
 
         # Check for circuit breaker
         if is_error and context.is_tool_circuit_breaker_tripped(tool_name, threshold=3):
@@ -340,7 +380,11 @@ class ReActLoop:
         return None
 
     async def _handle_tool_call(
-        self, response: Any, history: list[dict[str, Any]], context: MMCPContext
+        self,
+        response: Any,
+        history: list[dict[str, Any]],
+        context: MMCPContext,
+        tool_call_id: str | None = None,
     ) -> str | ActionRequestResponse | None:
         """
         Handle tool call (legacy method for backward compatibility).
@@ -352,7 +396,12 @@ class ReActLoop:
         if not tool:
             tool_name = type(response).__name__
             result = f"Error: Tool for schema '{tool_name}' not found."
-            self.history_manager.add_tool_result(history, f"error-{tool_name}", result)
+            self.history_manager.add_tool_result(
+                history,
+                f"error-{tool_name}",
+                result,
+                instructor_mode=get_instructor_mode(settings.llm_model),
+            )
             return None
 
         # Check if tool is in standby
@@ -360,7 +409,12 @@ class ReActLoop:
             plugin_name = tool.plugin_name
             config_error = self.loader._plugin_config_errors.get(plugin_name, "Setup required")
             result = f"Tool '{tool.name}' is on standby. {config_error}."
-            self.history_manager.add_tool_result(history, f"error-{tool.name}", result)
+            self.history_manager.add_tool_result(
+                history,
+                f"error-{tool.name}",
+                result,
+                instructor_mode=get_instructor_mode(settings.llm_model),
+            )
             return None
 
         # Prepare tool execution
@@ -392,9 +446,11 @@ class ReActLoop:
                 f"Completed tool: {tool_name}", context.runtime.trace_id, "tool_end"
             )
 
-        # Add result to history
-        call_id = getattr(response, "id", f"internal-{uuid.uuid4()}")
-        self.history_manager.add_tool_result(history, call_id, result)
+        # Add result to history using provided tool_call_id or fallback
+        call_id = tool_call_id or getattr(response, "id", f"internal-{uuid.uuid4()}")
+        self.history_manager.add_tool_result(
+            history, call_id, result, instructor_mode=get_instructor_mode(settings.llm_model)
+        )
 
         # Check for circuit breaker
         if is_error and context.is_tool_circuit_breaker_tripped(tool_name, threshold=3):

@@ -5,6 +5,7 @@ import json
 import uuid
 from datetime import timezone
 
+import instructor
 from sqlalchemy import select
 
 from app.agent.context_manager import ContextManager
@@ -17,8 +18,10 @@ from app.agent.session_manager import SessionManager
 # ANP imports (EventBus for agent turn lock, AgentNotificationInjector for async notifications)
 from app.anp.agent_integration import AgentNotificationInjector
 from app.anp.event_bus import EventBus
+from app.core.config import settings
 from app.core.context import MMCPContext
 from app.core.health import HealthMonitor
+from app.core.llm import get_instructor_mode
 from app.core.logger import logger
 from app.core.plugin_loader import PluginLoader
 
@@ -119,26 +122,46 @@ class AgentOrchestrator:
                     tool_args = pending_action["tool_args"]
                     tool_call_id = f"resumed-{approval_id}"
 
+                    # Determine instructor mode to format messages correctly
+                    instructor_mode = get_instructor_mode(settings.llm_model)
+
                     # 1. RECONSTRUCT THE ASSISTANT INTENT
                     # This tells the LLM: "You previously decided to call this tool"
-                    history.append(
-                        {
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": [
-                                {
-                                    "id": tool_call_id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": tool_name,
-                                        "arguments": json.dumps(tool_args)
-                                        if isinstance(tool_args, dict)
-                                        else str(tool_args),
-                                    },
-                                }
-                            ],
-                        }
-                    )
+                    # Format must match instructor_mode structure
+                    if instructor_mode == instructor.Mode.TOOLS:
+                        # Mode.TOOLS: Use native tool_calls format
+                        history.append(
+                            {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": tool_call_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": tool_name,
+                                            "arguments": json.dumps(tool_args)
+                                            if isinstance(tool_args, dict)
+                                            else str(tool_args),
+                                        },
+                                    }
+                                ],
+                            }
+                        )
+                    else:
+                        # Mode.JSON: Use content-based format for local models
+                        history.append(
+                            {
+                                "role": "assistant",
+                                "content": json.dumps(
+                                    {
+                                        "type": "tool_call",
+                                        "tool": tool_name,
+                                        "arguments": tool_args,
+                                    }
+                                ),
+                            }
+                        )
 
                     # 2. EXECUTE AND ADD RESULT
                     tool = self.loader.get_tool(tool_name)
@@ -154,12 +177,9 @@ class AgentOrchestrator:
                         tool, tool_name, tool_args, context
                     )
 
-                    history.append(
-                        {
-                            "role": "tool",
-                            "content": result,
-                            "tool_call_id": tool_call_id,
-                        }
+                    # Add result using mode-aware history manager
+                    self.history_manager.add_tool_result(
+                        history, tool_call_id, result, instructor_mode=instructor_mode
                     )
 
                 # Clear pending action and save

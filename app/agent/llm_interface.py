@@ -15,7 +15,7 @@ class LLMInterface:
         messages: list[dict[str, Any]],
         response_model: Any,
         trace_id: str | None = None,
-    ) -> Any:
+    ) -> tuple[Any, Any]:
         """
         Get structured decision from LLM using ReasoningProfile.
 
@@ -28,7 +28,9 @@ class LLMInterface:
             trace_id: Optional trace ID for logging
 
         Returns:
-            Structured response instance (FinalResponse or ReasonedToolCall)
+            Tuple of (parsed_object, raw_completion) where:
+            - parsed_object: Structured response instance (FinalResponse or ReasonedToolCall)
+            - raw_completion: Raw completion object with tool_calls metadata
         """
         logger.info(
             f"Getting reasoned decision (trace_id={trace_id})",
@@ -85,7 +87,7 @@ class LLMInterface:
 
     async def get_agent_decision(
         self, messages: list[dict[str, Any]], response_model: Any, trace_id: str | None = None
-    ) -> Any:
+    ) -> tuple[Any, Any]:
         """
         Get structured decision from LLM (legacy method, maintained for compatibility).
 
@@ -97,7 +99,7 @@ class LLMInterface:
             trace_id: Optional trace ID for logging
 
         Returns:
-            Structured response instance
+            Tuple of (parsed_object, raw_completion)
         """
         logger.info(
             f"Getting agent decision (trace_id={trace_id})",

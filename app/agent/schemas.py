@@ -40,6 +40,20 @@ class ActionRequestResponse(BaseModel):
     tool_args: dict = Field(description="Tool arguments for execution")
 
 
+class AgentTurn(BaseModel):
+    """
+    The unified container for every agent turn.
+
+    Instructor will always return this model, ensuring metadata preservation.
+    This wrapper pattern fixes the AttributeError when using Union types as
+    top-level response_model with instructor.create_with_completion.
+    """
+
+    action: FinalResponse | ReasonedToolCall = Field(
+        description="The agent's action: either a final response or a reasoned tool call"
+    )
+
+
 def get_reasoned_model(
     available_tools: list[type[BaseModel]],
 ) -> type[Union[FinalResponse, ReasonedToolCall]]:  # noqa: UP007
@@ -49,6 +63,9 @@ def get_reasoned_model(
     Returns a Union of FinalResponse and ReasonedToolCall, where tool_call
     is a Union of all provided tool types. This ensures the LLM returns
     both the tool selection and rationale in a single atomic call.
+
+    Note: This Union is wrapped in AgentTurn by get_agent_decision to avoid
+    the AttributeError with instructor.create_with_completion.
 
     Note: We use typing.Union (not | operator) because:
     1. The | operator cannot be used in reduce() lambda expressions
