@@ -176,14 +176,25 @@ class ReActLoop:
                 assistant_msg = raw_completion.choices[0].message
                 self.history_manager.add_llm_message(history, assistant_msg, instructor_mode)
 
-                if (
-                    instructor_mode == instructor.Mode.TOOLS
-                    and hasattr(raw_completion.choices[0].message, "tool_calls")
-                    and raw_completion.choices[0].message.tool_calls
-                ):
+                # If TOOLS mode, tool_call_id is mandatory
+                if instructor_mode == instructor.Mode.TOOLS:
+                    if not hasattr(raw_completion.choices[0].message, "tool_calls"):
+                        raise MMCPError(
+                            "Protocol Corruption: LLM response missing tool_calls in TOOLS mode",
+                            trace_id=context.runtime.trace_id,
+                        )
                     tool_calls = raw_completion.choices[0].message.tool_calls
-                    if tool_calls and len(tool_calls) > 0:
-                        tool_call_id = tool_calls[0].id
+                    if not tool_calls or len(tool_calls) == 0:
+                        raise MMCPError(
+                            "Protocol Corruption: LLM response has empty tool_calls in TOOLS mode",
+                            trace_id=context.runtime.trace_id,
+                        )
+                    tool_call_id = tool_calls[0].id
+                    if not tool_call_id:
+                        raise MMCPError(
+                            "Protocol Corruption: tool_call missing ID in TOOLS mode",
+                            trace_id=context.runtime.trace_id,
+                        )
 
                 result = await self._handle_tool_call(
                     response, history, context, tool_call_id=tool_call_id
@@ -369,14 +380,6 @@ class ReActLoop:
             #
             # See: docs/specs/anp-v1.0.md Section 6.1 "The Internal Turn Protection"
 
-            # STRICT STATE PERSISTENCE: tool_call_id is mandatory for TOOLS mode
-            instructor_mode_check = get_instructor_mode(settings.llm_model)
-            if instructor_mode_check == instructor.Mode.TOOLS and not tool_call_id:
-                raise MMCPError(
-                    f"Protocol Corruption: Missing tool_call_id for EXTERNAL tool '{tool_name}' in TOOLS mode",
-                    trace_id=context.runtime.trace_id,
-                )
-
             approval_id = str(uuid.uuid4())
             return ActionRequestResponse(
                 approval_id=approval_id,
@@ -408,10 +411,10 @@ class ReActLoop:
                 f"Completed tool: {tool_name}", context.runtime.trace_id, "tool_end"
             )
 
-        # Add result to history using provided tool_call_id or fallback
-        call_id = tool_call_id or getattr(tool_call, "id", f"internal-{uuid.uuid4()}")
+        # Add result to history using provided tool_call_id
+        # In JSON mode, tool_call_id is None and ignored by add_tool_result
         self.history_manager.add_tool_result(
-            history, call_id, result, instructor_mode=get_instructor_mode(settings.llm_model)
+            history, tool_call_id, result, instructor_mode=get_instructor_mode(settings.llm_model)
         )
 
         # Check for circuit breaker
@@ -479,14 +482,6 @@ class ReActLoop:
             explanation = f"I'm requesting to use {tool_name} to proceed with your request."
             sanitized_explanation = sanitize_explanation(explanation)
 
-            # STRICT STATE PERSISTENCE: tool_call_id is mandatory for TOOLS mode
-            instructor_mode = get_instructor_mode(settings.llm_model)
-            if instructor_mode == instructor.Mode.TOOLS and not tool_call_id:
-                raise MMCPError(
-                    f"Protocol Corruption: Missing tool_call_id for EXTERNAL tool '{tool_name}' in TOOLS mode",
-                    trace_id=context.runtime.trace_id,
-                )
-
             approval_id = str(uuid.uuid4())
             return ActionRequestResponse(
                 approval_id=approval_id,
@@ -507,10 +502,10 @@ class ReActLoop:
                 f"Completed tool: {tool_name}", context.runtime.trace_id, "tool_end"
             )
 
-        # Add result to history using provided tool_call_id or fallback
-        call_id = tool_call_id or getattr(response, "id", f"internal-{uuid.uuid4()}")
+        # Add result to history using provided tool_call_id
+        # In JSON mode, tool_call_id is None and ignored by add_tool_result
         self.history_manager.add_tool_result(
-            history, call_id, result, instructor_mode=get_instructor_mode(settings.llm_model)
+            history, tool_call_id, result, instructor_mode=get_instructor_mode(settings.llm_model)
         )
 
         # Check for circuit breaker

@@ -174,7 +174,13 @@ async def get_agent_decision(
             raise ValueError("LLM response message is empty")
 
         # Unwrap AgentTurn if we wrapped it
-        if needs_unwrap and isinstance(parsed_object, AgentTurn):
+        if needs_unwrap:
+            if not isinstance(parsed_object, AgentTurn):
+                raise ValueError(
+                    f"Expected AgentTurn instance after wrapping Union type, "
+                    f"but got {type(parsed_object).__name__}. "
+                    f"This indicates a bug in the wrapping logic. (trace_id={trace_id})"
+                )
             parsed_object = parsed_object.action
 
         return parsed_object, raw_completion

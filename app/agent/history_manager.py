@@ -93,15 +93,7 @@ class HistoryManager:
 
             instructor_mode = get_instructor_mode(settings.llm_model)
 
-        # Sequence sanitization: Ensure valid tool_call_id for Mode.TOOLS
         if instructor_mode == instructor.Mode.TOOLS:
-            # Check for None first, then validate string is not empty
-            if not tool_call_id or (isinstance(tool_call_id, str) and not tool_call_id.strip()):
-                logger.warning(
-                    "Attempted to add tool result without valid tool_call_id in Mode.TOOLS. "
-                    "Skipping to prevent protocol violation."
-                )
-                return
             # Native tool calling format (OpenAI, Gemini, Claude, DeepSeek)
             history.append({"role": "tool", "tool_call_id": tool_call_id, "content": str(result)})
         else:
