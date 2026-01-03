@@ -60,6 +60,8 @@ class ReActLoop:
         # Build the reasoned Union response model (FinalResponse | ReasonedToolCall)
         ResponseModel = self._get_reasoned_response_model()
 
+        instructor_mode = get_instructor_mode(settings.llm_model)
+
         # ReAct loop: allow multiple reasoning steps
         max_steps = 5
         llm_retry_count = 0
@@ -119,7 +121,7 @@ class ReActLoop:
                 # For ReasonedToolCall: Extract tool_call_id and add LLM message to preserve
                 # tool_calls metadata for DeepSeek 1:1 pairing requirement
                 tool_call_id = None
-                instructor_mode = get_instructor_mode(settings.llm_model)
+                all_tool_calls = []
 
                 # CRITICAL: Add assistant message to history IMMEDIATELY before tool execution
                 # This preserves the tool_calls metadata for Mode.TOOLS compatibility
@@ -144,8 +146,9 @@ class ReActLoop:
                             "Protocol Corruption: LLM response has empty tool_calls in TOOLS mode",
                             trace_id=context.runtime.trace_id,
                         )
-                    # Extract first tool call ID (handles single tool call case)
-                    # For multiple tool calls, we use the first one to match the primary tool
+                    # Extract all tool call IDs for protocol compliance
+                    # LLM providers require results for ALL tool calls, not just the first
+                    all_tool_calls = tool_calls
                     tool_call_id = tool_calls[0].id
                     if not tool_call_id:
                         raise MMCPError(
@@ -153,14 +156,34 @@ class ReActLoop:
                             trace_id=context.runtime.trace_id,
                         )
                     if len(tool_calls) > 1:
-                        logger.debug(
-                            f"Multiple tool calls detected ({len(tool_calls)}), using first ID: {tool_call_id}",
+                        logger.warning(
+                            f"Multiple tool calls detected ({len(tool_calls)}). "
+                            f"Executing primary tool, additional calls will receive error responses.",
                             extra={"trace_id": context.runtime.trace_id},
                         )
                 # Handle reasoned tool call (single-turn atomic consistency)
                 result = await self._handle_reasoned_tool_call(
-                    response, history, context, tool_call_id=tool_call_id
+                    response,
+                    history,
+                    context,
+                    tool_call_id=tool_call_id,
+                    instructor_mode=instructor_mode,
                 )
+
+                # Handle multiple tool calls: provide error results for additional tool calls
+                if instructor_mode == instructor.Mode.TOOLS and len(all_tool_calls) > 1:
+                    for additional_tc in all_tool_calls[1:]:
+                        if additional_tc.id:
+                            error_result = (
+                                "Parallel tool execution not supported. "
+                                "Please retry with one tool at a time."
+                            )
+                            self.history_manager.add_tool_result(
+                                history,
+                                additional_tc.id,
+                                error_result,
+                                instructor_mode=instructor_mode,
+                            )
                 if isinstance(result, ActionRequestResponse):
                     return result, history  # HITL interruption
                 elif isinstance(result, str):
@@ -170,7 +193,7 @@ class ReActLoop:
                 # Fallback: treat as regular tool call (for backward compatibility)
                 # Extract tool_call_id if in TOOLS mode (similar to ReasonedToolCall)
                 tool_call_id = None
-                instructor_mode = get_instructor_mode(settings.llm_model)
+                all_tool_calls = []
 
                 # Add LLM message to preserve tool_calls metadata
                 assistant_msg = raw_completion.choices[0].message
@@ -189,16 +212,43 @@ class ReActLoop:
                             "Protocol Corruption: LLM response has empty tool_calls in TOOLS mode",
                             trace_id=context.runtime.trace_id,
                         )
+                    # Extract all tool call IDs for protocol compliance
+                    all_tool_calls = tool_calls
                     tool_call_id = tool_calls[0].id
                     if not tool_call_id:
                         raise MMCPError(
                             "Protocol Corruption: tool_call missing ID in TOOLS mode",
                             trace_id=context.runtime.trace_id,
                         )
+                    if len(tool_calls) > 1:
+                        logger.warning(
+                            f"Multiple tool calls detected ({len(tool_calls)}). "
+                            f"Executing primary tool, additional calls will receive error responses.",
+                            extra={"trace_id": context.runtime.trace_id},
+                        )
 
                 result = await self._handle_tool_call(
-                    response, history, context, tool_call_id=tool_call_id
+                    response,
+                    history,
+                    context,
+                    tool_call_id=tool_call_id,
+                    instructor_mode=instructor_mode,
                 )
+
+                # Handle multiple tool calls: provide error results for additional tool calls
+                if instructor_mode == instructor.Mode.TOOLS and len(all_tool_calls) > 1:
+                    for additional_tc in all_tool_calls[1:]:
+                        if additional_tc.id:
+                            error_result = (
+                                "Parallel tool execution not supported. "
+                                "Please retry with one tool at a time."
+                            )
+                            self.history_manager.add_tool_result(
+                                history,
+                                additional_tc.id,
+                                error_result,
+                                instructor_mode=instructor_mode,
+                            )
                 if isinstance(result, ActionRequestResponse):
                     return result, history  # HITL interruption
                 elif isinstance(result, str):
@@ -306,6 +356,7 @@ class ReActLoop:
         history: list[dict[str, Any]],
         context: MMCPContext,
         tool_call_id: str | None = None,
+        instructor_mode: instructor.Mode | None = None,
     ) -> str | ActionRequestResponse | None:
         """
         Handle reasoned tool call from single-turn reasoning phase.
@@ -317,6 +368,9 @@ class ReActLoop:
         tool_call = response.tool_call
         rationale = response.rationale
 
+        if instructor_mode is None:
+            instructor_mode = get_instructor_mode(settings.llm_model)
+
         # Extract tool from registry
         tool = self.loader.get_tool_by_schema(type(tool_call))
         if not tool:
@@ -324,9 +378,9 @@ class ReActLoop:
             result = f"Error: Tool for schema '{tool_name}' not found."
             self.history_manager.add_tool_result(
                 history,
-                f"error-{tool_name}",
+                tool_call_id,
                 result,
-                instructor_mode=get_instructor_mode(settings.llm_model),
+                instructor_mode=instructor_mode,
             )
             return None
 
@@ -337,9 +391,9 @@ class ReActLoop:
             result = f"Tool '{tool.name}' is on standby. {config_error}."
             self.history_manager.add_tool_result(
                 history,
-                f"error-{tool.name}",
+                tool_call_id,
                 result,
-                instructor_mode=get_instructor_mode(settings.llm_model),
+                instructor_mode=instructor_mode,
             )
             return None
 
@@ -414,7 +468,7 @@ class ReActLoop:
         # Add result to history using provided tool_call_id
         # In JSON mode, tool_call_id is None and ignored by add_tool_result
         self.history_manager.add_tool_result(
-            history, tool_call_id, result, instructor_mode=get_instructor_mode(settings.llm_model)
+            history, tool_call_id, result, instructor_mode=instructor_mode
         )
 
         # Check for circuit breaker
@@ -440,6 +494,7 @@ class ReActLoop:
         history: list[dict[str, Any]],
         context: MMCPContext,
         tool_call_id: str | None = None,
+        instructor_mode: instructor.Mode | None = None,
     ) -> str | ActionRequestResponse | None:
         """
         Handle tool call (legacy method for backward compatibility).
@@ -447,15 +502,18 @@ class ReActLoop:
         This method is used when the response is not a ReasonedToolCall,
         maintaining backward compatibility with the old flow.
         """
+        if instructor_mode is None:
+            instructor_mode = get_instructor_mode(settings.llm_model)
+
         tool = self.loader.get_tool_by_schema(type(response))
         if not tool:
             tool_name = type(response).__name__
             result = f"Error: Tool for schema '{tool_name}' not found."
             self.history_manager.add_tool_result(
                 history,
-                f"error-{tool_name}",
+                tool_call_id,
                 result,
-                instructor_mode=get_instructor_mode(settings.llm_model),
+                instructor_mode=instructor_mode,
             )
             return None
 
@@ -466,9 +524,9 @@ class ReActLoop:
             result = f"Tool '{tool.name}' is on standby. {config_error}."
             self.history_manager.add_tool_result(
                 history,
-                f"error-{tool.name}",
+                tool_call_id,
                 result,
-                instructor_mode=get_instructor_mode(settings.llm_model),
+                instructor_mode=instructor_mode,
             )
             return None
 
@@ -505,7 +563,7 @@ class ReActLoop:
         # Add result to history using provided tool_call_id
         # In JSON mode, tool_call_id is None and ignored by add_tool_result
         self.history_manager.add_tool_result(
-            history, tool_call_id, result, instructor_mode=get_instructor_mode(settings.llm_model)
+            history, tool_call_id, result, instructor_mode=instructor_mode
         )
 
         # Check for circuit breaker
