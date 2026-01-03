@@ -173,17 +173,23 @@ class ReActLoop:
                 # Handle multiple tool calls: provide error results for additional tool calls
                 if instructor_mode == instructor.Mode.TOOLS and len(all_tool_calls) > 1:
                     for additional_tc in all_tool_calls[1:]:
-                        if additional_tc.id:
-                            error_result = (
-                                "Parallel tool execution not supported. "
-                                "Please retry with one tool at a time."
+                        if not additional_tc.id:
+                            raise MMCPError(
+                                "Protocol Corruption: Additional tool_call missing ID in TOOLS mode",
+                                trace_id=context.runtime.trace_id,
                             )
-                            self.history_manager.add_tool_result(
-                                history,
-                                additional_tc.id,
-                                error_result,
-                                instructor_mode=instructor_mode,
-                            )
+
+                        # If we have an ID, we MUST respond to it to satisfy the protocol
+                        error_result = (
+                            "Parallel tool execution not supported. "
+                            "Please retry with one tool at a time."
+                        )
+                        self.history_manager.add_tool_result(
+                            history,
+                            additional_tc.id,
+                            error_result,
+                            instructor_mode=instructor_mode,
+                        )
                 if isinstance(result, ActionRequestResponse):
                     return result, history  # HITL interruption
                 elif isinstance(result, str):
@@ -238,17 +244,23 @@ class ReActLoop:
                 # Handle multiple tool calls: provide error results for additional tool calls
                 if instructor_mode == instructor.Mode.TOOLS and len(all_tool_calls) > 1:
                     for additional_tc in all_tool_calls[1:]:
-                        if additional_tc.id:
-                            error_result = (
-                                "Parallel tool execution not supported. "
-                                "Please retry with one tool at a time."
+                        if not additional_tc.id:
+                            raise MMCPError(
+                                "Protocol Corruption: Additional tool_call missing ID in TOOLS mode",
+                                trace_id=context.runtime.trace_id,
                             )
-                            self.history_manager.add_tool_result(
-                                history,
-                                additional_tc.id,
-                                error_result,
-                                instructor_mode=instructor_mode,
-                            )
+
+                        # If we have an ID, we MUST respond to it to satisfy the protocol
+                        error_result = (
+                            "Parallel tool execution not supported. "
+                            "Please retry with one tool at a time."
+                        )
+                        self.history_manager.add_tool_result(
+                            history,
+                            additional_tc.id,
+                            error_result,
+                            instructor_mode=instructor_mode,
+                        )
                 if isinstance(result, ActionRequestResponse):
                     return result, history  # HITL interruption
                 elif isinstance(result, str):
