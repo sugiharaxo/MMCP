@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.core.config import settings
+from app.core.config import user_settings
 from app.core.logger import logger
 
 # Security scheme for Bearer token
@@ -20,7 +20,7 @@ security = HTTPBearer()
 
 def get_admin_token_path() -> Path:
     """Get the path to the admin token file."""
-    return Path(settings.root_dir) / ".admin_token"
+    return Path(user_settings.root_dir) / ".admin_token"
 
 
 def ensure_admin_token() -> str:
@@ -75,7 +75,7 @@ async def verify_admin(
     Raises:
         HTTPException: If token is missing or invalid
     """
-    if not settings.require_auth:
+    if not user_settings.require_auth:
         # Auth not required - allow access
         return True
 

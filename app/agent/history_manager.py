@@ -4,7 +4,7 @@ from typing import Any
 
 import instructor
 
-from app.core.config import settings
+from app.core.config import user_settings
 from app.core.logger import logger
 
 
@@ -28,7 +28,7 @@ class HistoryManager:
             current_chars = sum(len(m.get("content") or "") for m in history)
 
             # If we are under the limit or only have system prompt left, stop
-            if current_chars <= settings.llm_max_context_chars or len(history) <= 2:
+            if current_chars <= user_settings.llm_max_context_chars or len(history) <= 2:
                 break
 
             # Remove the oldest non-system message (index 1)
@@ -91,7 +91,7 @@ class HistoryManager:
             # Auto-detect mode if not provided
             from app.core.llm import get_instructor_mode
 
-            instructor_mode = get_instructor_mode(settings.llm_model)
+            instructor_mode = get_instructor_mode(user_settings.llm_model)
 
         if instructor_mode == instructor.Mode.TOOLS:
             # Native tool calling format (OpenAI, Gemini, Claude, DeepSeek)

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import and_, or_, select
 
 from app.anp.models import EventLedger, EventStatus
+from app.core.config import internal_settings
 from app.core.database import get_session
 from app.core.logger import logger
 
@@ -37,18 +38,20 @@ class AgentNotificationInjector:
         self._last_turn_time: datetime | None = None
 
     async def get_pending_notifications(
-        self, user_id: str = "default", limit: int = 10
+        self, user_id: str = "default", limit: int | None = None
     ) -> list[EventLedger]:
         """
         Query Channel C events (status PENDING/DISPATCHED).
 
         Args:
             user_id: User ID to filter by
-            limit: Maximum number of notifications to return
+            limit: Maximum number of notifications to return (defaults to internal setting)
 
         Returns:
             List of EventLedger instances
         """
+        if limit is None:
+            limit = internal_settings["notifications"]["pending_limit"]
         async with get_session() as session:
             # Query Channel C events: Handler=AGENT OR Target=AGENT
             stmt = (
@@ -73,7 +76,7 @@ class AgentNotificationInjector:
             return list(events)
 
     async def get_recent_user_acks(
-        self, user_id: str = "default", limit: int = 5
+        self, user_id: str = "default", limit: int | None = None
     ) -> list[EventLedger]:
         """
         Query Channel A/B events where status=DELIVERED and ack_at > last_turn_time.
@@ -83,11 +86,13 @@ class AgentNotificationInjector:
 
         Args:
             user_id: User ID to filter by
-            limit: Maximum number of notifications to return
+            limit: Maximum number of notifications to return (defaults to internal setting)
 
         Returns:
             List of EventLedger instances
         """
+        if limit is None:
+            limit = internal_settings["notifications"]["recent_acks_limit"]
         if not self._last_turn_time:
             # First turn - no previous turn time
             return []

@@ -19,7 +19,7 @@ from app.agent.session_manager import SessionManager
 # ANP imports (EventBus for agent turn lock, AgentNotificationInjector for async notifications)
 from app.anp.agent_integration import AgentNotificationInjector
 from app.anp.event_bus import EventBus
-from app.core.config import settings
+from app.core.config import user_settings
 from app.core.context import MMCPContext
 from app.core.errors import MMCPError
 from app.core.health import HealthMonitor
@@ -104,10 +104,10 @@ class AgentOrchestrator:
             ValueError: If maximum recursion depth is exceeded.
         """
         # Prevent infinite recursion from chained action requests
-        MAX_RESUME_DEPTH = 10
-        if depth >= MAX_RESUME_DEPTH:
+        max_resume_depth = user_settings.max_resume_depth
+        if depth >= max_resume_depth:
             raise ValueError(
-                f"Maximum action resumption depth ({MAX_RESUME_DEPTH}) exceeded. "
+                f"Maximum action resumption depth ({max_resume_depth}) exceeded. "
                 f"This may indicate a loop of action requests. "
                 f"Last approval_id: {approval_id}, trace_id: {trace_id}"
             )
@@ -147,7 +147,7 @@ class AgentOrchestrator:
                     tool_name = pending_action["tool_name"]
                     tool_args = pending_action["tool_args"]
                     # Determine instructor mode to format messages correctly
-                    instructor_mode = get_instructor_mode(settings.llm_model)
+                    instructor_mode = get_instructor_mode(user_settings.llm_model)
 
                     # STRICT STATE PERSISTENCE: Extract exactly what the LLM gave us
                     # Mode-aware extraction: Only extract tool_call_id for TOOLS mode

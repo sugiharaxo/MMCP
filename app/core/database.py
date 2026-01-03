@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 # ANP models are registered with Base when imported elsewhere
-from app.core.config import settings
+from app.core.config import user_settings
 from app.core.logger import logger
 
 
@@ -48,7 +48,7 @@ _session_maker = None
 
 def get_db_path() -> Path:
     """Get the database file path."""
-    return settings.data_dir / "mmcp.db"
+    return user_settings.data_dir / "mmcp.db"
 
 
 async def init_database() -> None:

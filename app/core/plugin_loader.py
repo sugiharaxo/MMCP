@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from app.api.base import ContextProvider, Plugin, Tool
 from app.api.schemas import PluginRuntime, PluginStatus
-from app.core.config import CoreSettings, settings
+from app.core.config import CoreSettings, user_settings
 from app.core.logger import logger
 from app.core.settings_manager import SettingsManager
 
@@ -110,9 +110,9 @@ class PluginLoader:
         """
         # Instantiate CoreSettings from settings instance
         core_paths = CoreSettings(
-            root_dir=settings.root_dir,
-            download_dir=settings.download_dir,
-            cache_dir=settings.cache_dir,
+            root_dir=user_settings.root_dir,
+            download_dir=user_settings.download_dir,
+            cache_dir=user_settings.cache_dir,
         )
 
         system_info = {

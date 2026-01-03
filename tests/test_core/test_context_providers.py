@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.agent.orchestrator import AgentOrchestrator
-from app.core.config import settings
+from app.core.config import user_settings
 from app.core.health import HealthMonitor, ProviderState
 from app.core.plugin_interface import ContextResponse
 from app.core.plugin_loader import PluginLoader
@@ -58,7 +58,7 @@ class TestHealthMonitor:
         monitor = HealthMonitor()
 
         # Record failures up to threshold
-        for _ in range(settings.context_failure_threshold):
+        for _ in range(user_settings.context_failure_threshold):
             monitor.record_failure("test_provider")
 
         # Should be blocked now
@@ -67,7 +67,7 @@ class TestHealthMonitor:
         # Check status
         status = monitor.get_status()["test_provider"]
         assert status["state"] == ProviderState.BLOCKED.value
-        assert status["failure_count"] == settings.context_failure_threshold
+        assert status["failure_count"] == user_settings.context_failure_threshold
 
     def test_health_monitor_success_reset(self):
         """Provider should reset on successful execution."""
@@ -90,7 +90,7 @@ class TestHealthMonitor:
         monitor = HealthMonitor()
 
         # Trip circuit breaker
-        for _ in range(settings.context_failure_threshold):
+        for _ in range(user_settings.context_failure_threshold):
             monitor.record_failure("test_provider")
 
         assert not monitor.is_available("test_provider")
@@ -105,7 +105,7 @@ class TestHealthMonitor:
             monitor.record_failure("test_provider")
 
             # Fast forward past recovery period
-            recovery_seconds = settings.context_recovery_wait_minutes * 60
+            recovery_seconds = user_settings.context_recovery_wait_minutes * 60
             mock_time.return_value = initial_time + recovery_seconds + 1
 
             # Should be available now
@@ -129,7 +129,7 @@ class TestContextAssembly:
         orchestrator = AgentOrchestrator(loader, health_monitor)
 
         # Override global timeout to 1ms
-        with patch("app.core.config.settings") as mock_settings:
+        with patch("app.core.config.user_settings") as mock_settings:
             mock_settings.context_global_timeout_ms = 1
             mock_settings.context_per_provider_timeout_ms = 300
             mock_settings.context_max_chars_per_provider = 2000
@@ -158,7 +158,7 @@ class TestContextAssembly:
         orchestrator = AgentOrchestrator(loader)
 
         # Set per-provider timeout to 100ms (provider takes 1s)
-        with patch("app.core.config.settings") as mock_settings:
+        with patch("app.core.config.user_settings") as mock_settings:
             mock_settings.context_global_timeout_ms = 800
             mock_settings.context_per_provider_timeout_ms = 100
             mock_settings.context_max_chars_per_provider = 2000
@@ -191,7 +191,7 @@ class TestContextAssembly:
         context.llm.media_state = {}
 
         # First 3 failures should be recorded
-        for _ in range(settings.context_failure_threshold):
+        for _ in range(user_settings.context_failure_threshold):
             await orchestrator.context_manager.assemble_llm_context("test query", context)
             assert len(context.llm.media_state) == 0  # No data due to failure
 
@@ -230,7 +230,7 @@ class TestContextAssembly:
         health_monitor = HealthMonitor()
         orchestrator = AgentOrchestrator(loader, health_monitor)
 
-        with patch("app.core.config.settings") as mock_settings:
+        with patch("app.core.config.user_settings") as mock_settings:
             mock_settings.context_global_timeout_ms = 800
             mock_settings.context_per_provider_timeout_ms = 300
             mock_settings.context_max_chars_per_provider = 2000  # Limit to 2000 chars

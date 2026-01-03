@@ -6,6 +6,8 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from app.core.config import internal_settings
+
 
 class MMCPLogger:
     """
@@ -54,10 +56,12 @@ class MMCPLogger:
         # 2. Rotating File Handler (The "Self-Cleaner")
         try:
             log_file = self._get_log_dir() / "server.log"
+            max_bytes = internal_settings["logging"]["max_bytes"]
+            backup_count = internal_settings["logging"]["backup_count"]
             file_handler = RotatingFileHandler(
                 log_file,
-                maxBytes=5 * 1024 * 1024,  # 5MB per file
-                backupCount=3,  # Keep 3 old files (total ~20MB)
+                maxBytes=max_bytes,
+                backupCount=backup_count,
                 encoding="utf-8",
             )
             file_handler.setFormatter(formatter)

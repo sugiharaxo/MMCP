@@ -95,10 +95,10 @@ def env_override(monkeypatch):
 async def init_test_database():
     """Initialize database for all tests that need it."""
     # Use in-memory SQLite for tests
-    from app.core.config import settings
+    from app.core.config import user_settings
 
     # Override database path to use in-memory database
-    original_db_path = settings.data_dir / "mmcp.db"
+    original_db_path = user_settings.data_dir / "mmcp.db"
     test_db_url = "sqlite+aiosqlite:///:memory:"
 
     # Monkey patch the database URL

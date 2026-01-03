@@ -7,6 +7,7 @@ Uses APScheduler to monitor expired events and trigger escalation.
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from app.core.config import internal_settings
 from app.core.logger import logger
 
 if True:  # TYPE_CHECKING
@@ -32,13 +33,15 @@ class WatchdogService:
         self.scheduler: AsyncIOScheduler | None = None
         self._running = False
 
-    async def start(self, interval_seconds: int = 10) -> None:
+    async def start(self, interval_seconds: int | None = None) -> None:
         """
         Start the watchdog scheduler.
 
         Args:
-            interval_seconds: Check interval in seconds (default: 10)
+            interval_seconds: Check interval in seconds (defaults to internal setting)
         """
+        if interval_seconds is None:
+            interval_seconds = internal_settings["watchdog"]["interval_seconds"]
         if self._running:
             logger.warning("WatchdogService already running")
             return

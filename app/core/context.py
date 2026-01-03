@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.core.config import settings
+from app.core.config import user_settings
 from app.core.logger import logger
 
 
@@ -33,9 +33,9 @@ class StaticContext(BaseModel):
         """Initialize with current settings after model creation."""
         self.config.update(
             {
-                "llm_max_context_chars": settings.llm_max_context_chars,
-                "llm_model": settings.llm_model,
-                "llm_base_url": settings.llm_base_url,
+                "llm_max_context_chars": user_settings.llm_max_context_chars,
+                "llm_model": user_settings.llm_model,
+                "llm_base_url": user_settings.llm_base_url,
                 # Only core system config here - plugins inject their own config
             }
         )
@@ -117,12 +117,18 @@ class MMCPContext(BaseModel):
         """Get failure count for a specific tool."""
         return self.runtime.tool_failure_counts.get(tool_name, 0)
 
-    def is_tool_circuit_breaker_tripped(self, tool_name: str, threshold: int = 3) -> bool:
+    def is_tool_circuit_breaker_tripped(
+        self, tool_name: str, threshold: int | None = None
+    ) -> bool:
         """Check if circuit breaker should trip for a tool."""
+        if threshold is None:
+            threshold = user_settings.tool_circuit_breaker_threshold
         return self.get_tool_failure_count(tool_name) >= threshold
 
-    def is_max_steps_reached(self, max_steps: int = 5) -> bool:
+    def is_max_steps_reached(self, max_steps: int | None = None) -> bool:
         """Check if maximum reasoning steps reached."""
+        if max_steps is None:
+            max_steps = user_settings.react_max_steps
         return self.runtime.step_count >= max_steps
 
     def set_available_tools(self, tools: dict[str, str]):

@@ -4,7 +4,7 @@ import asyncio
 from typing import Any
 
 from app.anp.agent_integration import AgentNotificationInjector
-from app.core.config import settings
+from app.core.config import user_settings
 from app.core.context import MMCPContext
 from app.core.errors import map_provider_error
 from app.core.health import HealthMonitor
@@ -55,7 +55,7 @@ class ContextManager:
 
         logger.info(
             f"Assembling context from {len(active_providers)} provider(s) "
-            f"(global timeout: {settings.context_global_timeout_ms}ms)"
+            f"(global timeout: {user_settings.context_global_timeout_ms}ms)"
         )
 
         # Run all providers in parallel with global timeout
@@ -64,7 +64,7 @@ class ContextManager:
         tasks = [self._safe_execute_provider(p, effective_input, context) for p in active_providers]
 
         try:
-            global_timeout_seconds = settings.context_global_timeout_ms / 1000.0
+            global_timeout_seconds = user_settings.context_global_timeout_ms / 1000.0
             results = await asyncio.wait_for(
                 asyncio.gather(*tasks, return_exceptions=True),
                 timeout=global_timeout_seconds,
@@ -113,14 +113,14 @@ class ContextManager:
             if hasattr(provider, "is_eligible_async"):
                 eligible = await asyncio.wait_for(
                     provider.is_eligible_async(effective_input),
-                    timeout=settings.context_per_provider_timeout_ms / 1000.0,
+                    timeout=user_settings.context_per_provider_timeout_ms / 1000.0,
                 )
             elif hasattr(provider, "is_eligible"):
                 # Check if it's a coroutine function and await if so
                 if asyncio.iscoroutinefunction(provider.is_eligible):
                     eligible = await asyncio.wait_for(
                         provider.is_eligible(effective_input),
-                        timeout=settings.context_per_provider_timeout_ms / 1000.0,
+                        timeout=user_settings.context_per_provider_timeout_ms / 1000.0,
                     )
                 else:
                     eligible = provider.is_eligible(effective_input)
@@ -134,7 +134,7 @@ class ContextManager:
             # Execute provider with timeout
             result = await asyncio.wait_for(
                 provider.provide_context(),
-                timeout=settings.context_per_provider_timeout_ms / 1000.0,
+                timeout=user_settings.context_per_provider_timeout_ms / 1000.0,
             )
 
             # Extract data from ContextResponse

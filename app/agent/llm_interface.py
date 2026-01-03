@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from app.core.config import default_profile, model_profiles, settings
+from app.core.config import default_profile, model_profiles, user_settings
 from app.core.llm import generate_dialogue, get_agent_decision
 from app.core.logger import logger
 
@@ -38,7 +38,7 @@ class LLMInterface:
         )
 
         # Get profile for this model (or use default)
-        profile = model_profiles.get(settings.llm_model, default_profile)
+        profile = model_profiles.get(user_settings.llm_model, default_profile)
 
         # Use reasoning profile settings
         temperature = profile.reasoning.temperature if hasattr(profile, "reasoning") else None
@@ -75,7 +75,7 @@ class LLMInterface:
         )
 
         # Get profile for this model (or use default)
-        profile = model_profiles.get(settings.llm_model, default_profile)
+        profile = model_profiles.get(user_settings.llm_model, default_profile)
 
         # Use dialogue profile settings
         temperature = profile.dialogue.temperature if hasattr(profile, "dialogue") else None
