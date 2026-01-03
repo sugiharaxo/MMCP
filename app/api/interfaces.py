@@ -120,18 +120,14 @@ class Tool(Protocol):
         """
         ...
 
-    async def execute(
-        self, runtime: PluginRuntime, settings: BaseModel | None, **kwargs: Any
-    ) -> Any:
+    async def execute(self, **kwargs: Any) -> Any:
         """
-        The actual logic.
+        Execute the tool's logic.
 
         Philosophy: Tools never fetch context themselves — context is injected.
 
         Args:
-            runtime: PluginRuntime with safe access to system state
-            settings: Validated settings instance (BaseModel) for this tool, or None if no settings_model defined
-            **kwargs: valid data matching input_schema.
+            **kwargs: Valid data matching input_schema (validated by Pydantic).
 
         Returns:
             A string, dict, or Pydantic model containing the result.
