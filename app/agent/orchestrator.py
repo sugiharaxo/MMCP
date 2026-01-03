@@ -83,11 +83,34 @@ class AgentOrchestrator:
         logger.info(message, extra=extra)
 
     async def resume_action(
-        self, approval_id: str, session_id: str, was_approved: bool, trace_id: str | None = None
+        self,
+        approval_id: str,
+        session_id: str,
+        was_approved: bool,
+        trace_id: str | None = None,
+        depth: int = 0,
     ) -> str:
         """
         Resume a paused conversation by approving/denying an external action.
+
+        Args:
+            approval_id: The approval identifier for the pending action.
+            session_id: Session identifier.
+            was_approved: Whether the action was approved.
+            trace_id: Optional trace ID for logging.
+            depth: Recursion depth counter (internal use, defaults to 0).
+
+        Raises:
+            ValueError: If maximum recursion depth is exceeded.
         """
+        # Prevent infinite recursion from chained action requests
+        MAX_RESUME_DEPTH = 10
+        if depth >= MAX_RESUME_DEPTH:
+            raise ValueError(
+                f"Maximum action resumption depth ({MAX_RESUME_DEPTH}) exceeded. "
+                f"This may indicate a loop of action requests. "
+                f"Last approval_id: {approval_id}, trace_id: {trace_id}"
+            )
         from app.core.errors import StaleApprovalError
 
         # Use session lock for concurrency control
@@ -127,15 +150,14 @@ class AgentOrchestrator:
                     instructor_mode = get_instructor_mode(settings.llm_model)
 
                     # STRICT STATE PERSISTENCE: Extract exactly what the LLM gave us
-                    # No fallbacks, no magic strings - fail loudly if data is missing
                     # Mode-aware extraction: Only extract tool_call_id for TOOLS mode
                     if instructor_mode == instructor.Mode.TOOLS:
                         tool_call_id = pending_action.get("tool_call_id")
                         if not tool_call_id:
-                            # This should never happen in a healthy system
                             raise MMCPError(
-                                "Protocol Corruption: Missing tool_call_id for resumed action in TOOLS mode. "
-                                "This indicates state persistence failure.",
+                                f"Missing tool_call_id in persisted pending_action for TOOLS mode. "
+                                f"This indicates a bug in state persistence when creating ActionRequestResponse. "
+                                f"(trace_id={trace_id}, approval_id={approval_id}, tool_name={tool_name})",
                                 trace_id=trace_id,
                             )
                     else:
