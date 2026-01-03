@@ -3,7 +3,7 @@
 import json
 from typing import Any
 
-from app.core.config import Settings
+from app.core.config import UserSettings
 from app.core.logger import logger
 
 
@@ -12,7 +12,7 @@ class ContextPruner:
 
     @staticmethod
     def _prune_dict(
-        data: Any, max_chars: int, current_size: int = 0, settings: Settings | None = None
+        data: Any, max_chars: int, current_size: int = 0, settings: UserSettings | None = None
     ) -> tuple[Any, int]:
         """
         Recursively prune dictionary/list to fit within character limit.
@@ -30,7 +30,7 @@ class ContextPruner:
             Tuple of (pruned_data, estimated_size).
         """
         if settings is None:
-            from app.core.config import settings as global_settings
+            from app.core.config import user_settings as global_settings
 
             settings = global_settings
 
@@ -95,7 +95,7 @@ class ContextPruner:
 
     @staticmethod
     def truncate_provider_data(
-        data: dict[str, Any], provider_key: str, settings: Settings | None = None
+        data: dict[str, Any], provider_key: str, settings: UserSettings | None = None
     ) -> dict[str, Any]:
         """
         Truncate provider data to prevent context bloat using the Safety Fuse approach.
@@ -112,7 +112,7 @@ class ContextPruner:
             Truncated data dictionary (pruned recursively if over limit).
         """
         if settings is None:
-            from app.core.config import settings as global_settings
+            from app.core.config import user_settings as global_settings
 
             settings = global_settings
 

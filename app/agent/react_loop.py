@@ -14,7 +14,7 @@ from app.agent.schemas import (
     ReasonedToolCall,
     get_reasoned_model,
 )
-from app.core.config import settings
+from app.core.config import internal_settings, user_settings
 from app.core.context import MMCPContext
 from app.core.errors import MMCPError, map_agent_error, map_provider_error
 from app.core.llm import get_instructor_mode
@@ -60,14 +60,14 @@ class ReActLoop:
         # Build the reasoned Union response model (FinalResponse | ReasonedToolCall)
         ResponseModel = self._get_reasoned_response_model()
 
-        instructor_mode = get_instructor_mode(settings.llm_model)
+        instructor_mode = get_instructor_mode(user_settings.llm_model)
 
         # ReAct loop: allow multiple reasoning steps
-        max_steps = 5
+        max_steps = user_settings.react_max_steps
         llm_retry_count = 0
-        max_llm_retries = 2
+        max_llm_retries = user_settings.react_max_llm_retries
         rate_limit_retry_count = 0
-        max_rate_limit_retries = 3
+        max_rate_limit_retries = user_settings.react_max_rate_limit_retries
 
         for _ in range(max_steps):
             context.increment_step()
@@ -303,7 +303,8 @@ class ReActLoop:
         # Rate limit errors with exponential backoff
         is_rate_limit = "rate limit" in str(error).lower() or "429" in str(error)
         if is_rate_limit and rate_limit_retry_count < max_rate_limit_retries:
-            backoff_seconds = 2 ** (rate_limit_retry_count - 1)
+            backoff_base = internal_settings["react_loop"]["backoff_base"]
+            backoff_seconds = backoff_base ** (rate_limit_retry_count - 1)
             logger.warning(
                 f"Rate limit hit (attempt {rate_limit_retry_count}/{max_rate_limit_retries}), "
                 f"backing off for {backoff_seconds}s (trace_id={context.runtime.trace_id})"
@@ -381,7 +382,7 @@ class ReActLoop:
         rationale = response.rationale
 
         if instructor_mode is None:
-            instructor_mode = get_instructor_mode(settings.llm_model)
+            instructor_mode = get_instructor_mode(user_settings.llm_model)
 
         # Extract tool from registry
         tool = self.loader.get_tool_by_schema(type(tool_call))
@@ -484,7 +485,9 @@ class ReActLoop:
         )
 
         # Check for circuit breaker
-        if is_error and context.is_tool_circuit_breaker_tripped(tool_name, threshold=3):
+        if is_error and context.is_tool_circuit_breaker_tripped(
+            tool_name, threshold=user_settings.tool_circuit_breaker_threshold
+        ):
             failure_count = context.get_tool_failure_count(tool_name)
             msg = f"I encountered a persistent issue with the {tool_name} tool. {result}"
             logger.error(
@@ -515,7 +518,7 @@ class ReActLoop:
         maintaining backward compatibility with the old flow.
         """
         if instructor_mode is None:
-            instructor_mode = get_instructor_mode(settings.llm_model)
+            instructor_mode = get_instructor_mode(user_settings.llm_model)
 
         tool = self.loader.get_tool_by_schema(type(response))
         if not tool:
@@ -579,7 +582,9 @@ class ReActLoop:
         )
 
         # Check for circuit breaker
-        if is_error and context.is_tool_circuit_breaker_tripped(tool_name, threshold=3):
+        if is_error and context.is_tool_circuit_breaker_tripped(
+            tool_name, threshold=user_settings.tool_circuit_breaker_threshold
+        ):
             failure_count = context.get_tool_failure_count(tool_name)
             msg = f"I encountered a persistent issue with the {tool_name} tool. {result}"
             logger.error(
@@ -600,7 +605,9 @@ class ReActLoop:
     ):
         """Safely execute a tool with error handling."""
         try:
-            result = await asyncio.wait_for(tool.execute(**args), timeout=30.0)
+            result = await asyncio.wait_for(
+                tool.execute(**args), timeout=user_settings.tool_execution_timeout_seconds
+            )
             return str(result) if result is not None else "Tool executed successfully.", False
         except Exception as e:
             from app.core.errors import map_tool_error

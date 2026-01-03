@@ -7,7 +7,7 @@ import instructor
 import litellm
 from litellm import acompletion
 
-from app.core.config import settings
+from app.core.config import internal_settings, user_settings
 from app.core.logger import logger
 
 # Hard-suppress LiteLLM verbose output to prevent "Provider List" spam
@@ -23,15 +23,15 @@ def get_instructor_mode(model_name: str | None = None) -> instructor.Mode:
     Get Instructor mode from config profile, with fallback to auto-detection.
 
     Args:
-        model_name: Optional model identifier (uses settings.llm_model if not provided)
+        model_name: Optional model identifier (uses user_settings.llm_model if not provided)
 
     Returns:
         Instructor Mode enum value
     """
-    from app.core.config import default_profile, model_profiles, settings
+    from app.core.config import default_profile, model_profiles, user_settings
 
-    # Use provided model_name or fallback to settings
-    model = model_name or settings.llm_model
+    # Use provided model_name or fallback to user_settings
+    model = model_name or user_settings.llm_model
 
     # Get profile for this model (or use default)
     profile = model_profiles.get(model, default_profile)
@@ -99,14 +99,14 @@ async def get_agent_decision(
     from app.agent.schemas import AgentTurn
     from app.core.config import default_profile, model_profiles
 
-    if not settings.llm_model:
+    if not user_settings.llm_model:
         raise ValueError("LLM_MODEL must be set (e.g., 'openai/gpt-4o' or 'ollama/llama3')")
 
     # Get profile for this model (or use default)
-    profile = model_profiles.get(settings.llm_model, default_profile)
+    profile = model_profiles.get(user_settings.llm_model, default_profile)
 
     # Determine instructor mode dynamically per-call
-    instructor_mode = get_instructor_mode(settings.llm_model)
+    instructor_mode = get_instructor_mode(user_settings.llm_model)
 
     # Create client dynamically based on mode
     client = instructor.from_litellm(acompletion, mode=instructor_mode)
@@ -132,10 +132,10 @@ async def get_agent_decision(
 
     # Build kwargs: only pass what is explicitly provided
     kwargs = {
-        "model": settings.llm_model,
+        "model": user_settings.llm_model,
         "messages": messages,
         "response_model": actual_response_model,
-        "max_retries": 2,  # Instructor will retry on validation errors
+        "max_retries": internal_settings["react_loop"]["instructor_max_retries"],
         "num_retries": 0,  # Disable LiteLLM's built-in retries - we handle them in orchestrator
     }
 
@@ -151,11 +151,11 @@ async def get_agent_decision(
     elif hasattr(profile, "reasoning") and hasattr(profile.reasoning, "max_tokens"):
         kwargs["max_tokens"] = profile.reasoning.max_tokens
 
-    if settings.llm_api_key:
-        kwargs["api_key"] = settings.llm_api_key
+    if user_settings.llm_api_key:
+        kwargs["api_key"] = user_settings.llm_api_key
 
-    if settings.llm_base_url:
-        kwargs["base_url"] = settings.llm_base_url
+    if user_settings.llm_base_url:
+        kwargs["base_url"] = user_settings.llm_base_url
 
     try:
         # Use create_with_completion to preserve tool_calls metadata
@@ -190,12 +190,12 @@ async def get_agent_decision(
             f"LLM call failed (trace_id={trace_id}): {type(e).__name__}: {e}",
             exc_info=True,
             extra={
-                "model": settings.llm_model,
+                "model": user_settings.llm_model,
                 "message_count": len(messages),
                 "trace_id": trace_id,
             }
             if trace_id
-            else {"model": settings.llm_model, "message_count": len(messages)},
+            else {"model": user_settings.llm_model, "message_count": len(messages)},
         )
         # Re-raise to be handled by orchestrator's error mapping
         raise
@@ -228,15 +228,15 @@ async def generate_dialogue(
     """
     from app.core.config import default_profile, model_profiles
 
-    if not settings.llm_model:
+    if not user_settings.llm_model:
         raise ValueError("LLM_MODEL must be set (e.g., 'openai/gpt-4o' or 'ollama/llama3')")
 
     # Get profile for this model (or use default)
-    profile = model_profiles.get(settings.llm_model, default_profile)
+    profile = model_profiles.get(user_settings.llm_model, default_profile)
 
     # Build kwargs
     kwargs = {
-        "model": settings.llm_model,
+        "model": user_settings.llm_model,
         "messages": messages,
     }
 
@@ -256,11 +256,11 @@ async def generate_dialogue(
     else:
         kwargs["max_tokens"] = 2048  # Safe default
 
-    if settings.llm_api_key:
-        kwargs["api_key"] = settings.llm_api_key
+    if user_settings.llm_api_key:
+        kwargs["api_key"] = user_settings.llm_api_key
 
-    if settings.llm_base_url:
-        kwargs["base_url"] = settings.llm_base_url
+    if user_settings.llm_base_url:
+        kwargs["base_url"] = user_settings.llm_base_url
 
     try:
         # Use raw litellm completion for dialogue generation (not structured)
@@ -272,12 +272,12 @@ async def generate_dialogue(
             f"Dialogue generation failed (trace_id={trace_id}): {type(e).__name__}: {e}",
             exc_info=True,
             extra={
-                "model": settings.llm_model,
+                "model": user_settings.llm_model,
                 "message_count": len(messages),
                 "trace_id": trace_id,
             }
             if trace_id
-            else {"model": settings.llm_model, "message_count": len(messages)},
+            else {"model": user_settings.llm_model, "message_count": len(messages)},
         )
         # Re-raise to be handled by orchestrator's error mapping
         raise

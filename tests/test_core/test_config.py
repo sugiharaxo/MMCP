@@ -2,12 +2,12 @@
 
 from pathlib import Path
 
-from app.core.config import Settings
+from app.core.config import UserSettings
 
 
 def test_default_paths():
     """Test that default paths are resolved correctly."""
-    settings = Settings()
+    settings = UserSettings()
 
     assert isinstance(settings.root_dir, Path)
     assert isinstance(settings.plugin_dir, Path)
@@ -26,7 +26,7 @@ def test_directories_created(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DOWNLOAD_DIR", str(tmp_path / "downloads"))
     monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
 
-    settings = Settings()
+    settings = UserSettings()
 
     assert settings.download_dir.exists()
     assert settings.cache_dir.exists()
@@ -38,7 +38,7 @@ def test_llm_config_from_env(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "sk-test-key")
     monkeypatch.setenv("LLM_BASE_URL", "http://localhost:11434")
 
-    settings = Settings()
+    settings = UserSettings()
 
     assert settings.llm_model == "gemini/flash"
     assert settings.llm_api_key == "sk-test-key"

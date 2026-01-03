@@ -3,9 +3,15 @@ Configuration management using pydantic-settings.
 
 Handles environment variables, defines ROOT_DIR for file operations,
 and provides typed configuration for plugins and the agent.
+
+Architecture:
+- UserSettings: User-tunable settings (from .env or DB) with UI metadata
+- Internal Settings: Logic constants loaded from settings.json (not user-configurable)
 """
 
+import json
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -36,12 +42,40 @@ def _get_data_dir() -> Path:
     return _get_project_root() / "data"
 
 
-class Settings(BaseSettings):
+def _load_internal_settings() -> dict[str, Any]:
     """
-    Application-wide configuration.
+    Load internal logic constants from settings.json.
 
-    Loads from .env file and environment variables.
+    These are parameters the user should never see or modify.
+    The Machine's Manual - immutable at runtime.
+    """
+    settings_file = Path(__file__).parent / "settings.json"
+    if not settings_file.exists():
+        # Return safe defaults if file doesn't exist
+        return {
+            "react_loop": {"backoff_base": 2, "max_llm_retries": 2, "instructor_max_retries": 2},
+            "event_bus": {"default_ttl_seconds": 300},
+            "logging": {"max_bytes": 5242880, "backup_count": 3},
+            "notifications": {"pending_limit": 10, "recent_acks_limit": 5},
+            "watchdog": {"interval_seconds": 10},
+        }
+    with open(settings_file, encoding="utf-8") as f:
+        return json.load(f)
+
+
+# Load internal settings once at module import
+internal_settings = _load_internal_settings()
+
+
+class UserSettings(BaseSettings):
+    """
+    User-tunable settings (The Dashboard).
+
+    Loads from .env file, environment variables, or database overrides.
     Environment variables take precedence over .env file values.
+
+    Fields marked with json_schema_extra={"ui_advanced": True} are hidden
+    behind an "Advanced" toggle in the UI.
     """
 
     model_config = SettingsConfigDict(
@@ -106,35 +140,77 @@ class Settings(BaseSettings):
         description="Require authentication for settings endpoints (uses .admin_token file)",
     )
 
+    # --- ADVANCED SETTINGS ---
+    # ReAct Loop Configuration
+    react_max_steps: int = Field(
+        default=5,
+        description="Maximum ReAct loop iterations before giving up",
+        json_schema_extra={"ui_advanced": True},
+    )
+    react_max_llm_retries: int = Field(
+        default=2,
+        description="Maximum retry attempts for LLM validation errors",
+        json_schema_extra={"ui_advanced": True},
+    )
+    react_max_rate_limit_retries: int = Field(
+        default=3,
+        description="Maximum retry attempts for rate limit errors",
+        json_schema_extra={"ui_advanced": True},
+    )
+    tool_execution_timeout_seconds: float = Field(
+        default=30.0,
+        description="Timeout in seconds for tool execution",
+        json_schema_extra={"ui_advanced": True},
+    )
+    tool_circuit_breaker_threshold: int = Field(
+        default=3,
+        description="Number of consecutive failures before tool circuit breaker trips",
+        json_schema_extra={"ui_advanced": True},
+    )
+
+    # Orchestrator Configuration
+    max_resume_depth: int = Field(
+        default=10,
+        description="Maximum recursion depth for action resumption",
+        json_schema_extra={"ui_advanced": True},
+    )
+
     # Context Provider Configuration
     # Heuristics for context provider execution and health monitoring
     context_global_timeout_ms: int = Field(
         default=800,
         description="Global timeout in milliseconds for all context providers combined",
+        json_schema_extra={"ui_advanced": True},
     )
     context_per_provider_timeout_ms: int = Field(
         default=300,
         description="Per-provider timeout in milliseconds for individual context fetches",
+        json_schema_extra={"ui_advanced": True},
     )
     context_max_chars_per_provider: int = Field(
         default=10000,
         description="Maximum characters per provider response (truncated if exceeded)",
+        json_schema_extra={"ui_advanced": True},
     )
     context_max_string_length: int = Field(
         default=500,
         description="Maximum length for individual strings in provider data during truncation",
+        json_schema_extra={"ui_advanced": True},
     )
     context_max_list_items: int = Field(
         default=10,
         description="Maximum number of items in lists during truncation",
+        json_schema_extra={"ui_advanced": True},
     )
     context_failure_threshold: int = Field(
         default=3,
         description="Number of consecutive failures before circuit breaker trips",
+        json_schema_extra={"ui_advanced": True},
     )
     context_recovery_wait_minutes: int = Field(
         default=5,
         description="Minutes to wait before retrying a circuit-broken provider",
+        json_schema_extra={"ui_advanced": True},
     )
 
     def __init__(self, **kwargs):
@@ -204,9 +280,9 @@ class CoreSettings(BaseModel):
     cache_dir: Path = Field(description="Directory for cache files")
 
 
-# Global settings instance
-# Import this in other modules: `from app.core.config import settings`
-settings = Settings()
+# Global user settings instance
+# Import this in other modules: `from app.core.config import user_settings`
+user_settings = UserSettings()
 
 # Default LLM profile (used as fallback)
 default_profile = LLMProfile()

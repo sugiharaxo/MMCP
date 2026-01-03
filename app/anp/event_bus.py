@@ -14,15 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.anp.models import EventLedger, EventStatus
 from app.anp.schemas import NotificationCreate
+from app.core.config import internal_settings
 from app.core.database import get_session
 from app.core.logger import logger
 
 if TYPE_CHECKING:
     from app.anp.notification_dispatcher import NotificationDispatcher
     from app.core.session_manager import SessionManager
-
-# Default TTL for Channel C events (5 minutes)
-DEFAULT_TTL_SECONDS = 300
 
 
 class EventBus:
@@ -232,8 +230,9 @@ class EventBus:
         elif is_channel_c:
             # Channel C: Agent context (set TTL if not provided)
             if not event.delivery_deadline:
+                default_ttl = internal_settings["event_bus"]["default_ttl_seconds"]
                 event.delivery_deadline = datetime.now(timezone.utc) + timedelta(
-                    seconds=DEFAULT_TTL_SECONDS
+                    seconds=default_ttl
                 )
             await self._transition_state(
                 session, event.id, EventStatus.PENDING, EventStatus.DISPATCHED, None

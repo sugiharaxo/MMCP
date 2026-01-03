@@ -9,7 +9,7 @@ import time
 from enum import Enum
 from typing import Any
 
-from app.core.config import settings
+from app.core.config import user_settings
 from app.core.logger import logger
 
 
@@ -39,11 +39,11 @@ class ProviderHealth:
         self.failure_count += 1
         self.last_failure_time = time.time()
 
-        if self.failure_count >= settings.context_failure_threshold:
+        if self.failure_count >= user_settings.context_failure_threshold:
             self.state = ProviderState.BLOCKED
             logger.warning(
                 f"Context provider circuit breaker tripped after {self.failure_count} failures. "
-                f"Will retry after {settings.context_recovery_wait_minutes} minutes."
+                f"Will retry after {user_settings.context_recovery_wait_minutes} minutes."
             )
 
     def is_available(self) -> bool:
@@ -60,7 +60,7 @@ class ProviderHealth:
         if self.last_failure_time is None:
             return True
 
-        recovery_seconds = settings.context_recovery_wait_minutes * 60
+        recovery_seconds = user_settings.context_recovery_wait_minutes * 60
         time_since_failure = time.time() - self.last_failure_time
 
         if time_since_failure >= recovery_seconds:

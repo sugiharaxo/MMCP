@@ -221,7 +221,7 @@ async def test_chat_max_steps(orchestrator: AgentOrchestrator):
 def test_trim_history_character_limit(orchestrator: AgentOrchestrator):
     """Test that history trimming respects character limits."""
     # Set a very low character limit
-    with patch("app.agent.history_manager.settings") as mock_settings:
+    with patch("app.agent.history_manager.user_settings") as mock_settings:
         mock_settings.llm_max_context_chars = 100
 
         # Create test history
@@ -245,7 +245,7 @@ def test_trim_history_character_limit(orchestrator: AgentOrchestrator):
 
 def test_trim_history_preserves_system_prompt(orchestrator: AgentOrchestrator):
     """Test that system prompt is always preserved."""
-    with patch("app.agent.history_manager.settings") as mock_settings:
+    with patch("app.agent.history_manager.user_settings") as mock_settings:
         mock_settings.llm_max_context_chars = 10  # Very low limit
 
         history = [{"role": "system", "content": "System prompt"}]

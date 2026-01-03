@@ -16,7 +16,7 @@ from app.api.routes import chat as chat_routes
 from app.api.routes import notifications as notifications_routes
 from app.api.routes import settings as settings_routes
 from app.core.auth import ensure_admin_token
-from app.core.config import settings
+from app.core.config import user_settings
 from app.core.database import close_database, init_database
 from app.core.errors import (
     AgentLogicError,
@@ -38,7 +38,7 @@ STATIC_DIR = BASE_DIR / "static"
 STATIC_DIR.mkdir(exist_ok=True)
 
 
-loader = PluginLoader(settings.plugin_dir)
+loader = PluginLoader(user_settings.plugin_dir)
 health_monitor = HealthMonitor()
 orchestrator = AgentOrchestrator(loader, health_monitor)
 event_bus = EventBus()
@@ -57,7 +57,7 @@ async def lifespan(_app: FastAPI):
     await init_database()
 
     # Generate admin token if auth is required
-    if settings.require_auth:
+    if user_settings.require_auth:
         ensure_admin_token()
 
     # Load plugins (now async)
@@ -204,7 +204,7 @@ async def get_status():
 
     return {
         "status": "online",
-        "llm_configured": bool(settings.llm_api_key or settings.llm_base_url),
+        "llm_configured": bool(user_settings.llm_api_key or user_settings.llm_base_url),
         "plugins": plugin_statuses,  # Generic plugin status dictionary
         "loaded_plugins": list(loader.list_tools().keys()),
     }
