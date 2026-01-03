@@ -1,22 +1,21 @@
 {
-    "_comment": "Internal logic constants - not user-configurable. The Machine's Manual.",
-    "react_loop": {
-        "backoff_base": 2,
-        "max_llm_retries": 2,
-        "instructor_max_retries": 2
-    },
-    "event_bus": {
-        "default_ttl_seconds": 300
-    },
-    "logging": {
-        "max_bytes": 5242880,
-        "backup_count": 3
-    },
-    "notifications": {
-        "pending_limit": 10,
-        "recent_acks_limit": 5
-    },
-    "watchdog": {
-        "interval_seconds": 10
-    }
+  "react_loop": {
+    "backoff_base": 2,
+    "max_llm_retries": 2,
+    "instructor_max_retries": 2
+  },
+  "event_bus": {
+    "default_ttl_seconds": 300
+  },
+  "logging": {
+    "max_bytes": 5242880,
+    "backup_count": 3
+  },
+  "notifications": {
+    "pending_limit": 10,
+    "recent_acks_limit": 5
+  },
+  "watchdog": {
+    "interval_seconds": 10
+  }
 }
