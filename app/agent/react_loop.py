@@ -1,6 +1,7 @@
 """ReAct Loop - handles the main reasoning and tool execution loop."""
 
 import asyncio
+import json
 import uuid
 from typing import Any
 
@@ -37,7 +38,7 @@ class ReActLoop:
         user_input: str,
         session_history: list[dict[str, Any]],
         context: MMCPContext,
-        system_prompt: str,
+        system_prompt: str | tuple[str, str],
         notification_injector=None,
     ) -> tuple[str | ActionRequestResponse, list[dict[str, Any]]]:
         """
@@ -47,12 +48,13 @@ class ReActLoop:
             user_input: The user's message
             session_history: Current conversation history
             context: MMCP context
-            system_prompt: The system prompt to use
+            system_prompt: The system prompt(s) to use.
+                          Can be a single string (legacy) or tuple of (static, dynamic) strings.
 
         Returns:
             Tuple of (response object, updated history list)
         """
-        # Reconstruct history for this turn
+        # Reconstruct history for this turn (supports both legacy and cache-safe formats)
         history = self.history_manager.reconstruct_history(
             session_history, system_prompt, user_input
         )
@@ -118,6 +120,7 @@ class ReActLoop:
                 )
                 return result, history
             elif isinstance(response, ReasonedToolCall):
+                # Legacy ReasonedToolCall wrapper (backward compatibility)
                 # For ReasonedToolCall: Extract tool_call_id and add LLM message to preserve
                 # tool_calls metadata for DeepSeek 1:1 pairing requirement
                 tool_call_id = None
@@ -196,8 +199,8 @@ class ReActLoop:
                     return result, history  # Circuit breaker or error response
                 # Continue loop with tool result in history
             else:
-                # Fallback: treat as regular tool call (for backward compatibility)
-                # Extract tool_call_id if in TOOLS mode (similar to ReasonedToolCall)
+                # Flattened tool call structure: response is directly a tool schema with rationale
+                # Extract tool_call_id if in TOOLS mode
                 tool_call_id = None
                 all_tool_calls = []
 
@@ -233,7 +236,8 @@ class ReActLoop:
                             extra={"trace_id": context.runtime.trace_id},
                         )
 
-                result = await self._handle_tool_call(
+                # Handle flattened tool call (has rationale field directly)
+                result = await self._handle_flattened_tool_call(
                     response,
                     history,
                     context,
@@ -503,6 +507,80 @@ class ReActLoop:
 
         return None
 
+    async def _handle_flattened_tool_call(
+        self,
+        response: Any,
+        history: list[dict[str, Any]],
+        context: MMCPContext,
+        tool_call_id: str | None = None,
+        instructor_mode: instructor.Mode | None = None,
+    ) -> str | ActionRequestResponse | None:
+        """
+        Handle flattened tool call structure (tool schema with rationale field directly).
+
+        With the flattened Union structure, tool schemas include rationale field
+        from MMCPAction base class, eliminating the need for ReasonedToolCall wrapper.
+        """
+        if instructor_mode is None:
+            instructor_mode = get_instructor_mode(user_settings.llm_model)
+
+        rationale = response.rationale
+        tool_type = response.type
+
+        tool_key = tool_type.replace("tool_", "")
+        tool = self.loader.tools.get(tool_key)
+
+        if not tool:
+            tool = self.loader.get_tool_by_schema(type(response))
+
+        if not tool:
+            error_msg = f"Tool registry error: '{tool_key}' not found."
+            self.history_manager.add_tool_result(history, tool_call_id, error_msg, instructor_mode)
+            return None
+
+        # Check if tool is in standby
+        if tool.name in self.loader.standby_tools:
+            plugin_name = tool.plugin_name
+            config_error = self.loader._plugin_config_errors.get(plugin_name, "Setup required")
+            result = f"Tool '{tool.name}' is on standby. {config_error}."
+            self.history_manager.add_tool_result(
+                history,
+                tool_call_id,
+                result,
+                instructor_mode=instructor_mode,
+            )
+            return None
+
+        tool_args = response.model_dump(exclude={"rationale", "type"})
+
+        tool_name = tool.name
+
+        # Check classification
+        if tool.classification == "EXTERNAL":
+            # Sanitize rationale to prevent injection attacks
+            sanitized_rationale = sanitize_explanation(rationale)
+
+            # Template-based fallback if rationale is missing or empty
+            if not sanitized_rationale or not sanitized_rationale.strip():
+                sanitized_rationale = (
+                    f"I'm requesting to use {tool_name} to proceed with your request."
+                )
+
+            approval_id = str(uuid.uuid4())
+            return ActionRequestResponse(
+                approval_id=approval_id,
+                explanation=sanitized_rationale,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                tool_call_id=tool_call_id,
+            )
+
+        logger.info(f"Executing {tool.name} | Rationale: {rationale}")
+
+        result, is_error = await self.safe_tool_call(tool, tool.name, tool_args, context)
+        self.history_manager.add_tool_result(history, tool_call_id, result, instructor_mode)
+        return None
+
     async def _handle_tool_call(
         self,
         response: Any,
@@ -603,12 +681,18 @@ class ReActLoop:
     async def safe_tool_call(
         self, tool, tool_name: str, args: dict[str, Any], context: MMCPContext
     ):
-        """Safely execute a tool with error handling."""
+        """Zero-modification pipe between tool and history."""
         try:
             result = await asyncio.wait_for(
                 tool.execute(**args), timeout=user_settings.tool_execution_timeout_seconds
             )
-            return str(result) if result is not None else "Tool executed successfully.", False
+
+            # We only stringify because LiteLLM/APIs require a string/serializable content
+            if result is None:
+                return "Success", False
+            if isinstance(result, (dict, list)):
+                return json.dumps(result, ensure_ascii=False), False
+            return str(result), False
         except Exception as e:
             from app.core.errors import map_tool_error
 

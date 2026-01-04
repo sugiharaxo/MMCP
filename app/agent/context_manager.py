@@ -1,6 +1,7 @@
 """Context Manager - handles context assembly and system prompt generation."""
 
 import asyncio
+import platform
 from typing import Any
 
 from app.anp.agent_integration import AgentNotificationInjector
@@ -165,82 +166,18 @@ class ContextManager:
             )
             return provider_key, None
 
-    async def get_system_prompt(self, context: MMCPContext | None = None) -> str:
+    async def get_static_instructions(self) -> str:
         """
-        Generate system prompt with dynamic tool descriptions and context-aware state.
+        Generate static system instructions that never change during a session.
 
-        Simplified prompt focusing on "when to use tools" rather than formatting rules.
-        The Union response_model handles the "how" of formatting automatically.
+        This includes identity, global rules, and system configuration.
+        Instructor will automatically append the tool schema to this message,
+        making it cache-safe for KV cache optimization.
 
-        Injects dynamic state from context (user preferences, media state) to make
-        the LLM aware of current server state.
-
-        Also injects relevant context for agent awareness.
+        Returns:
+            Static prompt string that remains constant throughout the session.
         """
-        if not self.loader:
-            tool_desc = "No tools are currently available."
-        else:
-            tool_descriptions = []
-            for idx, (name, tool) in enumerate(self.loader.tools.items(), start=1):
-                desc = f"{idx}. {name}: {tool.description}"
-
-                # Add clean argument descriptions instead of raw JSON schema
-                if hasattr(tool, "input_schema"):
-                    schema = tool.input_schema
-                    schema_json = schema.model_json_schema()
-                    properties = schema_json.get("properties", {})
-                    required = schema_json.get("required", [])
-
-                    if properties:
-                        arg_list = []
-                        for prop_name, prop_info in properties.items():
-                            prop_type = prop_info.get("type", "any")
-                            is_required = prop_name in required
-                            prop_desc = prop_info.get("description", "")
-                            default = prop_info.get("default", None)
-
-                            if is_required:
-                                arg_list.append(
-                                    f"  - {prop_name} ({prop_type}): {prop_desc} [REQUIRED]"
-                                )
-                            else:
-                                default_str = f", default: {default}" if default is not None else ""
-                                arg_list.append(
-                                    f"  - {prop_name} ({prop_type}): {prop_desc} [optional{default_str}]"
-                                )
-
-                        if arg_list:
-                            desc += "\n   Args:\n" + "\n".join(arg_list)
-
-                tool_descriptions.append(desc)
-
-            tool_desc = "\n".join(tool_descriptions)
-
-        # Get the sanitized LLM payload for context-aware prompts
-        context_section = ""
-        if context:
-            state = context.get_llm_payload()
-            # Build human-readable state description
-            state_parts = []
-            if state.get("user_preferences"):
-                state_parts.append(f"User Preferences: {state['user_preferences']}")
-            if state.get("media_state"):
-                state_parts.append(f"Media State: {state['media_state']}")
-            if state_parts:
-                state_desc = "\n".join(state_parts)
-                context_section = f"CONTEXT:\n{state_desc}"
-
-        # Add standby alerts for system awareness
-        standby_alerts = self._get_standby_alerts()
-
-        # Inject notifications (pending + recent user ACKs)
-        user_id = "default"  # Single-user system for now
-        pending = await self.notification_injector.get_pending_notifications(user_id)
-        recent_acks = await self.notification_injector.get_recent_user_acks(user_id)
-        notification_section = self.notification_injector.format_for_system_prompt(
-            pending, recent_acks
-        )
-
+        host_os = platform.system()
         return f"""You are MMCP (Modular Media Control Plane), an intelligent media assistant.
 You help users manage their media library, search for metadata, and handle downloads.
 
@@ -249,16 +186,58 @@ IDENTITY:
 - Use tools to fetch data before making recommendations.
 - If a tool fails, explain why to the user and try a different approach.
 
-{context_section}
+SYSTEM:
+- OS: {host_os}
+- Use tools when you need specific information or actions.
+- When you have enough information to answer the user, provide a FinalResponse with your answer.
 
-{standby_alerts}
+(Instructor will append the available tool schemas here automatically.)"""
 
-{notification_section}
+    async def get_dynamic_state(self, context: MMCPContext | None = None) -> str:
+        """
+        Generate dynamic state that changes every turn.
 
-AVAILABLE TOOLS:
-{tool_desc}
+        This includes current time, media state, notifications, and standby alerts.
+        This content is sent as a separate system message to allow KV cache
+        persistence of the static instructions.
 
-Use tools when you need specific information or actions. When you have enough information to answer the user, provide a FinalResponse with your answer."""
+        Args:
+            context: MMCPContext with current state
+
+        Returns:
+            Dynamic state string that changes each turn.
+        """
+        from datetime import datetime, timezone
+
+        # Get current time
+        current_time = datetime.now(timezone.utc).isoformat()
+
+        # Get the sanitized LLM payload for context-aware prompts
+        state_parts = [f"TIME: {current_time}"]
+
+        if context:
+            state = context.get_llm_payload()
+            if state.get("user_preferences"):
+                state_parts.append(f"User Preferences: {state['user_preferences']}")
+            if state.get("media_state"):
+                state_parts.append(f"Media State: {state['media_state']}")
+
+        # Add standby alerts for system awareness
+        standby_alerts = self._get_standby_alerts()
+        if standby_alerts:
+            state_parts.append(standby_alerts)
+
+        # Inject notifications (pending + recent user ACKs)
+        user_id = "default"  # Single-user system for now
+        pending = await self.notification_injector.get_pending_notifications(user_id)
+        recent_acks = await self.notification_injector.get_recent_user_acks(user_id)
+        notification_section = self.notification_injector.format_for_system_prompt(
+            pending, recent_acks
+        )
+        if notification_section:
+            state_parts.append(notification_section)
+
+        return "\n".join(state_parts)
 
     def _get_standby_alerts(self) -> str:
         """

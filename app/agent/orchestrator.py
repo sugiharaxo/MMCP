@@ -59,6 +59,9 @@ class AgentOrchestrator:
         self.notification_injector = AgentNotificationInjector(self.event_bus)
         self.context_manager = ContextManager(loader, self.notification_injector, self.health)
 
+        # Cache static instructions for KV cache persistence
+        self._cached_static_instructions: str | None = None
+
     async def _emit_status(
         self,
         message: str,
@@ -356,14 +359,18 @@ class AgentOrchestrator:
 
         # Global agent turn lock for causal serialization
         async with self.event_bus.get_agent_turn_lock():
-            # Delegate to ReAct loop with system prompt
-            system_prompt = await self.context_manager.get_system_prompt(context)
+            if self._cached_static_instructions is None:
+                self._cached_static_instructions = (
+                    await self.context_manager.get_static_instructions()
+                )
+            dynamic_prompt = await self.context_manager.get_dynamic_state(context)
+            system_prompts = (self._cached_static_instructions, dynamic_prompt)
 
             # UNPACK TUPLE: Result and Updated History
             # Handle None user_input for action resumption (pass empty string to react loop)
             react_user_input = user_input if user_input is not None else ""
             result, updated_history = await self.react_loop.execute_turn(
-                react_user_input, history, context, system_prompt, self.notification_injector
+                react_user_input, history, context, system_prompts, self.notification_injector
             )
 
             # Handle Session Persistence

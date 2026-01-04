@@ -93,10 +93,6 @@ async def get_agent_decision(
         ValueError: If LLM_MODEL is not set or if response is empty/invalid.
         Exception: Any LiteLLM or Instructor exceptions (will be mapped by orchestrator)
     """
-    from typing import Union as TypingUnion
-    from typing import get_origin
-
-    from app.agent.schemas import AgentTurn
     from app.core.config import default_profile, model_profiles
 
     if not user_settings.llm_model:
@@ -111,24 +107,7 @@ async def get_agent_decision(
     # Create client dynamically based on mode
     client = instructor.from_litellm(acompletion, mode=instructor_mode)
 
-    # Wrap Union types in AgentTurn to fix AttributeError with instructor
-    # Check if response_model is a Union type
-    origin = get_origin(response_model)
-    needs_unwrap = False
-    if origin is not None and origin is TypingUnion:
-        # Wrap the Union in AgentTurn using create_model
-        from pydantic import create_model
-
-        wrapped_model = create_model(
-            "AgentTurnWrapper",
-            action=(response_model, ...),
-            __base__=AgentTurn,
-        )
-        actual_response_model = wrapped_model
-        needs_unwrap = True
-    else:
-        # Not a Union, use as-is
-        actual_response_model = response_model
+    actual_response_model = response_model
 
     # Build kwargs: only pass what is explicitly provided
     kwargs = {
@@ -173,16 +152,7 @@ async def get_agent_decision(
         if not raw_completion.choices[0].message:
             raise ValueError("LLM response message is empty")
 
-        # Unwrap AgentTurn if we wrapped it
-        if needs_unwrap:
-            if not isinstance(parsed_object, AgentTurn):
-                raise ValueError(
-                    f"Expected AgentTurn instance after wrapping Union type, "
-                    f"but got {type(parsed_object).__name__}. "
-                    f"This indicates a bug in the wrapping logic. (trace_id={trace_id})"
-                )
-            parsed_object = parsed_object.action
-
+        # Return parsed object directly (flattened Union, no unwrapping needed)
         return parsed_object, raw_completion
     except Exception as e:
         # Log the raw error with full context

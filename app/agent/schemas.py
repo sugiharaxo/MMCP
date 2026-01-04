@@ -1,9 +1,20 @@
 from typing import Any, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 
-class FinalResponse(BaseModel):
+class MMCPAction(BaseModel):
+    """
+    Base class for all MMCP actions (tools and final responses).
+
+    Provides a rationale field for all actions, enabling flattened Union structure
+    and reducing schema nesting for better KV cache efficiency.
+    """
+
+    rationale: str = Field(default="", description="Brief internal reasoning for this action")
+
+
+class FinalResponse(MMCPAction):
     """The model's final answer to the user."""
 
     type: Literal["final_response"] = "final_response"
@@ -19,10 +30,10 @@ class FinalResponse(BaseModel):
 
 class ReasonedToolCall(BaseModel):
     """
-    Tool call with rationale for single-turn reasoned HITL flow.
+    Tool call with rationale for single-turn reasoned HITL flow (legacy wrapper).
 
-    Ensures atomic consistency between the agent's logic and the explanation
-    shown to the user, preventing Lies-in-the-Loop (LITL) injection attacks.
+    NOTE: This is kept for backward compatibility. New flattened structure uses
+    MMCPAction base class directly on tool schemas.
     """
 
     type: Literal["reasoned_tool_call"] = "reasoned_tool_call"
@@ -46,11 +57,10 @@ class ActionRequestResponse(BaseModel):
 
 class AgentTurn(BaseModel):
     """
-    The unified container for every agent turn.
+    The unified container for every agent turn (legacy wrapper).
 
-    Instructor will always return this model, ensuring metadata preservation.
-    This wrapper pattern fixes the AttributeError when using Union types as
-    top-level response_model with instructor.create_with_completion.
+    NOTE: This wrapper is no longer needed with flattened Union structure.
+    Kept for backward compatibility during migration.
     """
 
     action: FinalResponse | ReasonedToolCall = Field(
@@ -58,62 +68,33 @@ class AgentTurn(BaseModel):
     )
 
 
-def get_reasoned_model(
-    available_tools: list[type[BaseModel]],
-) -> type[Union[FinalResponse, ReasonedToolCall]]:  # noqa: UP007
+def get_reasoned_model(available_tools: list[type[BaseModel]]) -> type:
     """
-    Build a Union model for single-turn reasoned tool selection.
+    Build a flattened Union model for single-turn reasoned tool selection.
 
-    Returns a Union of FinalResponse and ReasonedToolCall, where tool_call
-    is a Union of all provided tool types. This ensures the LLM returns
-    both the tool selection and rationale in a single atomic call.
+    Returns a flattened Union of FinalResponse and all tool schemas (with rationale
+    added dynamically). This reduces schema nesting and improves KV cache efficiency.
 
-    Note: This Union is wrapped in AgentTurn by get_agent_decision to avoid
-    the AttributeError with instructor.create_with_completion.
-
-    Note: We use typing.Union (not | operator) because:
-    1. The | operator cannot be used in reduce() lambda expressions
-    2. typing.Union is more explicit and compatible with Instructor/Pydantic
-    3. Instructor (via Pydantic) handles Union types correctly for discriminated unions
-
-    Args:
-        available_tools: List of tool input schema classes (BaseModel subclasses)
-
-    Returns:
-        Union type that can be FinalResponse or ReasonedToolCall with tool_call
-        validated against the Union of all available tool schemas
+    Each tool schema is dynamically extended to include the rationale field from
+    MMCPAction, enabling a flat Union structure without nested wrappers.
     """
-    from functools import reduce
-
     if not available_tools:
-        # If no tools, return Union of FinalResponse and ReasonedToolCall with Any tool_call
-        return Union[FinalResponse, ReasonedToolCall]  # type: ignore[return-value]  # noqa: UP007
+        return FinalResponse  # type: ignore[return-value]
 
-    # Build Union of all tool schemas for runtime validation using typing.Union
-    # Instructor will use this to validate the tool_call field
-    # Note: Python automatically normalizes nested Unions (Union[Union[A, B], C] -> Union[A, B, C])
-    tool_union = reduce(lambda acc, schema: Union[acc, schema], available_tools)  # type: ignore[assignment]  # noqa: UP007
+    extended_tools = []
+    for tool_schema in available_tools:
+        slug = tool_schema.__name__.lower().replace("input", "").replace("metadata", "")
+        type_value = f"tool_{slug.strip('_')}"
+        ExtendedTool = create_model(
+            f"Extended{tool_schema.__name__}",
+            __base__=(MMCPAction, tool_schema),
+            type=(Literal[type_value], Field(default=type_value)),  # type: ignore
+        )
+        extended_tools.append(ExtendedTool)
 
-    # Create a dynamic ReasonedToolCall class with tool_call as the Union type
-    # We use create_model to properly set up the Union type annotation
-    from pydantic import create_model
+    # Build flattened Union (compatible with Python 3.10)
+    union_type: type = FinalResponse
+    for extended_tool in extended_tools:
+        union_type = Union[union_type, extended_tool]  # type: ignore[assignment]
 
-    # Create the model with tool_call typed as the Union
-    # Pydantic will validate tool_call matches one of the tool schemas
-    # Use __base__=ReasonedToolCall so isinstance checks work correctly
-    ReasonedToolCallWithUnion = create_model(
-        "ReasonedToolCallWithUnion",
-        type=(
-            Literal["reasoned_tool_call"],
-            Field(default="reasoned_tool_call", description="Response type discriminator"),
-        ),
-        rationale=(str, Field(description="Concise explanation of why this tool is being used")),
-        tool_call=(
-            tool_union,
-            Field(description="The specific tool schema (Union of available tools)"),
-        ),
-        __base__=ReasonedToolCall,
-    )
-
-    # Return Union of FinalResponse and the reasoned tool call using typing.Union
-    return Union[FinalResponse, ReasonedToolCallWithUnion]  # type: ignore[return-value]  # noqa: UP007
+    return union_type  # type: ignore[return-value]
