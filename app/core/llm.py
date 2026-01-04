@@ -32,7 +32,8 @@ def unwrap_response(obj: Any) -> Any:
     if obj is None or not isinstance(obj, BaseModel):
         return obj
 
-    fields = list(obj.model_fields.keys())
+    # Access model_fields from the class (not instance) to avoid Pydantic V2.11+ deprecation
+    fields = list(obj.__class__.model_fields.keys())
     # Instructor wrappers usually have exactly one field and generic names
     if len(fields) == 1:
         class_name = obj.__class__.__name__
@@ -174,17 +175,27 @@ async def get_agent_decision(
         raw_completion = completion
 
     # Register the hook to capture raw completion
-    # Note: Check if client supports hooks (some Instructor versions may use different API)
-    try:
-        if hasattr(client, "on"):
+    # Hooks are required for metadata capture - fail fast if unavailable
+    if hasattr(client, "on"):
+        try:
             client.on("completion:response", capture_metadata)
-        elif hasattr(client.chat.completions, "on"):
+        except (AttributeError, TypeError) as e:
+            raise ValueError(
+                "Instructor hooks not available: required for metadata capture. "
+                f"Client does not support 'on' method: {e}"
+            ) from e
+    elif hasattr(client.chat.completions, "on"):
+        try:
             client.chat.completions.on("completion:response", capture_metadata)
-    except (AttributeError, TypeError):
-        # If hooks aren't available, we'll fall back to a different approach
-        logger.warning(
-            "Instructor hooks not available, falling back to alternative metadata capture",
-            extra={"trace_id": trace_id} if trace_id else {},
+        except (AttributeError, TypeError) as e:
+            raise ValueError(
+                "Instructor hooks not available: required for metadata capture. "
+                f"Client.chat.completions does not support 'on' method: {e}"
+            ) from e
+    else:
+        raise ValueError(
+            "Instructor hooks not available: required for metadata capture. "
+            "Client does not support hook registration via 'on' method."
         )
 
     try:
@@ -198,16 +209,12 @@ async def get_agent_decision(
         if parsed_object is None:
             raise ValueError("LLM returned no valid objects")
 
-        # If hook didn't capture metadata, try to get it from the parsed object
-        # (fallback for Instructor versions that don't support hooks)
-        if raw_completion is None:
-            # Try to access _raw_response if it exists (may work for single models)
-            raw_completion = getattr(parsed_object, "_raw_response", None)
-            if raw_completion is None and isinstance(parsed_output, BaseModel):
-                raw_completion = getattr(parsed_output, "_raw_response", None)
-
-        if not raw_completion or not hasattr(raw_completion, "choices"):
-            raise ValueError("Transport Error: Could not capture raw completion metadata.")
+        # Verify hook captured metadata (should always succeed if hook registration succeeded)
+        if raw_completion is None or not hasattr(raw_completion, "choices"):
+            raise ValueError(
+                "Transport Error: Hook did not capture raw completion metadata. "
+                "This indicates an Instructor internal error."
+            )
 
         return parsed_object, raw_completion
     except Exception as e:
