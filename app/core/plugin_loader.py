@@ -139,8 +139,8 @@ class PluginLoader:
             for node in ast.walk(tree):
                 # We look for the literal name "Plugin" in the bases
                 if isinstance(node, ast.ClassDef) and any(
-                    (isinstance(base, ast.Name) and base.id == "Plugin") or
-                    (isinstance(base, ast.Attribute) and base.attr == "Plugin")
+                    (isinstance(base, ast.Name) and base.id == "Plugin")
+                    or (isinstance(base, ast.Attribute) and base.attr == "Plugin")
                     for base in node.bases
                 ):
                     return True
@@ -366,25 +366,26 @@ class PluginLoader:
 
     def get_tool_by_schema(self, schema_class: type[BaseModel]) -> Tool | None:
         """
-        Get tool instance by its input_schema Pydantic model class.
+        O(1) lookup for tool instances.
+        Handles both original and 'Extended' Pydantic schemas.
 
         Used to map LLM tool call responses (which are instances of tool input schemas)
         back to the tool instance that should execute them.
 
-        Checks active tools first, then standby tools.
-
         Args:
-            schema_class: The Pydantic model class (e.g., TMDbMetadataInput)
+            schema_class: The Pydantic model class (e.g., TMDbMetadataInput or ExtendedTMDbMetadataInput)
 
         Returns:
             The Tool instance that uses this schema, or None if not found
         """
-        # Check active tools first
-        tool = self._schema_to_tool.get(schema_class)
-        if tool:
+        if tool := self._schema_to_tool.get(schema_class):
             return tool
 
-        # Check standby tools
+        for base in schema_class.__bases__:
+            if tool := self._schema_to_tool.get(base):
+                self._schema_to_tool[schema_class] = tool
+                return tool
+
         for standby_tool in self.standby_tools.values():
             if hasattr(standby_tool, "input_schema") and standby_tool.input_schema == schema_class:
                 return standby_tool
