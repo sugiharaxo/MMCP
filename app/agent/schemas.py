@@ -1,31 +1,23 @@
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, create_model
 
 
-class MMCPAction(BaseModel):
-    """
-    Base class for all MMCP actions (tools and final responses).
-
-    Provides a rationale field for all actions, enabling flattened Union structure
-    and reducing schema nesting for better KV cache efficiency.
-    """
-
-    rationale: str = Field(default="", description="Brief internal reasoning for this action")
-
-
-class FinalResponse(MMCPAction):
+# 1. Static, Clean FinalResponse. No reasoning/protocol pollution.
+class FinalResponse(BaseModel):
     """The model's final answer to the user."""
 
     type: Literal["final_response"] = "final_response"
-    thought: str = Field(description="Brief internal reasoning")
-    answer: str = Field(description="The final message to the user")
-    acknowledged_ids: list[str] | None = Field(
-        default=None, description="List of notification IDs acknowledged by agent"
-    )
-    internal_turn: bool | None = Field(
-        default=None, description="Whether this was an internal turn (non-UI)"
-    )
+    thought: str = Field(..., description="Brief internal reasoning")
+    answer: str = Field(..., description="The final message to the user")
+    acknowledged_ids: list[str] | None = Field(default=None)
+
+
+# 2. Base for Plugin Tools only (Agentic Notification Protocol reasoning)
+class MMCPToolAction(BaseModel):
+    """Base for tools requiring reasoning/rationale."""
+
+    rationale: str = Field(default="", description="Internal reasoning for this action")
 
 
 class ReasonedToolCall(BaseModel):
@@ -33,7 +25,7 @@ class ReasonedToolCall(BaseModel):
     Tool call with rationale for single-turn reasoned HITL flow (legacy wrapper).
 
     NOTE: This is kept for backward compatibility. New flattened structure uses
-    MMCPAction base class directly on tool schemas.
+    MMCPToolAction base class directly on tool schemas.
     """
 
     type: Literal["reasoned_tool_call"] = "reasoned_tool_call"
@@ -68,33 +60,34 @@ class AgentTurn(BaseModel):
     )
 
 
-def get_reasoned_model(available_tools: list[type[BaseModel]]) -> type:
+def get_reasoned_model(tools_map: dict[str, type[BaseModel]]) -> list[type[BaseModel]]:
     """
-    Build a flattened Union model for single-turn reasoned tool selection.
+    Returns a list of models.
+    FinalResponse remains pure. Plugin tools get rationale injected.
 
-    Returns a flattened Union of FinalResponse and all tool schemas (with rationale
-    added dynamically). This reduces schema nesting and improves KV cache efficiency.
+    Args:
+        tools_map: A dictionary mapping tool_name (e.g. 'test_external_action')
+                  to its input_schema (e.g. TestExternalInput).
 
-    Each tool schema is dynamically extended to include the rationale field from
-    MMCPAction, enabling a flat Union structure without nested wrappers.
+    Returns:
+        List of Pydantic models including FinalResponse and all extended tool schemas.
+        FinalResponse is returned as-is (no rationale injection).
+        Plugin tools are extended with MMCPToolAction to include rationale and type fields.
+        This list is converted to Union[...] in get_agent_decision() for Instructor.
     """
-    if not available_tools:
-        return FinalResponse  # type: ignore[return-value]
+    # Start with pure FinalResponse
+    models = [FinalResponse]
 
-    extended_tools = []
-    for tool_schema in available_tools:
-        slug = tool_schema.__name__.lower().replace("input", "").replace("metadata", "")
-        type_value = f"tool_{slug.strip('_')}"
-        ExtendedTool = create_model(
-            f"Extended{tool_schema.__name__}",
-            __base__=(MMCPAction, tool_schema),
-            type=(Literal[type_value], Field(default=type_value)),  # type: ignore
+    for tool_name, tool_schema in tools_map.items():
+        type_value = f"tool_{tool_name}"
+
+        # Inject reasoning ONLY into plugin tools
+        extended_tool = create_model(
+            tool_schema.__name__,
+            __base__=(tool_schema, MMCPToolAction),
+            type=(Literal[type_value], Field(default=type_value)),
+            __module__=__name__,
         )
-        extended_tools.append(ExtendedTool)
+        models.append(extended_tool)
 
-    # Build flattened Union (compatible with Python 3.10)
-    union_type: type = FinalResponse
-    for extended_tool in extended_tools:
-        union_type = Union[union_type, extended_tool]  # type: ignore[assignment]
-
-    return union_type  # type: ignore[return-value]
+    return models  # Return the list for Instructor to unroll

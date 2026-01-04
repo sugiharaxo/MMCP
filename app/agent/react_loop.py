@@ -18,7 +18,7 @@ from app.agent.schemas import (
 from app.core.config import internal_settings, user_settings
 from app.core.context import MMCPContext
 from app.core.errors import MMCPError, map_agent_error, map_provider_error
-from app.core.llm import get_instructor_mode
+from app.core.llm import get_instructor_mode, safe_get
 from app.core.logger import logger
 from app.core.plugin_loader import PluginLoader
 from app.core.security import sanitize_explanation
@@ -126,43 +126,48 @@ class ReActLoop:
                 tool_call_id = None
                 all_tool_calls = []
 
+                # Extract protocol metadata from the RAW completion (Mode-Agnostic)
+                choices = safe_get(raw_completion, "choices")
+                message = safe_get(choices[0], "message") if choices else None
+                tool_calls = safe_get(message, "tool_calls")
+
                 # CRITICAL: Add assistant message to history IMMEDIATELY before tool execution
                 # This preserves the tool_calls metadata for Mode.TOOLS compatibility
-                assistant_msg = raw_completion.choices[0].message
-                self.history_manager.add_llm_message(history, assistant_msg, instructor_mode)
+                if message:
+                    self.history_manager.add_llm_message(history, message, instructor_mode)
 
-                # Extract tool_call_id if in TOOLS mode
-                # CRITICAL: Extract from raw_completion.choices[0].message.tool_calls[0].id
-                # for DeepSeek 1:1 pairing requirement
-                # STRICT STATE PERSISTENCE: If TOOLS mode, tool_call_id is mandatory
-                if instructor_mode == instructor.Mode.TOOLS:
-                    # If the LLM failed to give us an ID in TOOLS mode,
-                    # that is a system failure, not a scenario for a fallback.
-                    if not hasattr(raw_completion.choices[0].message, "tool_calls"):
-                        raise MMCPError(
-                            "Protocol Corruption: LLM response missing tool_calls in TOOLS mode",
-                            trace_id=context.runtime.trace_id,
-                        )
-                    tool_calls = raw_completion.choices[0].message.tool_calls
-                    if not tool_calls or len(tool_calls) == 0:
-                        raise MMCPError(
-                            "Protocol Corruption: LLM response has empty tool_calls in TOOLS mode",
-                            trace_id=context.runtime.trace_id,
-                        )
-                    # Extract all tool call IDs for protocol compliance
-                    # LLM providers require results for ALL tool calls, not just the first
+                # Extract tool_call_id from raw completion (works for all modes)
+                if tool_calls:
+                    # We found tool calls in the transport layer.
+                    # Use the ID provided by the model (works for wrappers OR native calls).
                     all_tool_calls = tool_calls
-                    tool_call_id = tool_calls[0].id
-                    if not tool_call_id:
-                        raise MMCPError(
-                            "Protocol Corruption: tool_call missing ID in TOOLS mode",
-                            trace_id=context.runtime.trace_id,
-                        )
+                    call_id = safe_get(tool_calls[0], "id")
+                    if call_id:
+                        tool_call_id = call_id
+
                     if len(tool_calls) > 1:
                         logger.warning(
                             f"Multiple tool calls detected ({len(tool_calls)}). "
                             f"Executing primary tool, additional calls will receive error responses.",
                             extra={"trace_id": context.runtime.trace_id},
+                        )
+
+                # STRICT STATE PERSISTENCE: If TOOLS mode, tool_call_id is mandatory
+                if instructor_mode == instructor.Mode.TOOLS:
+                    if not tool_calls:
+                        raise MMCPError(
+                            "Protocol Corruption: LLM response missing tool_calls in TOOLS mode",
+                            trace_id=context.runtime.trace_id,
+                        )
+                    if len(tool_calls) == 0:
+                        raise MMCPError(
+                            "Protocol Corruption: LLM response has empty tool_calls in TOOLS mode",
+                            trace_id=context.runtime.trace_id,
+                        )
+                    if not tool_call_id:
+                        raise MMCPError(
+                            "Protocol Corruption: tool_call missing ID in TOOLS mode",
+                            trace_id=context.runtime.trace_id,
                         )
                 # Handle reasoned tool call (single-turn atomic consistency)
                 result = await self._handle_reasoned_tool_call(
@@ -200,40 +205,50 @@ class ReActLoop:
                 # Continue loop with tool result in history
             else:
                 # Flattened tool call structure: response is directly a tool schema with rationale
-                # Extract tool_call_id if in TOOLS mode
                 tool_call_id = None
                 all_tool_calls = []
 
-                # Add LLM message to preserve tool_calls metadata
-                assistant_msg = raw_completion.choices[0].message
-                self.history_manager.add_llm_message(history, assistant_msg, instructor_mode)
+                # Extract protocol metadata from the RAW completion (Mode-Agnostic)
+                choices = safe_get(raw_completion, "choices")
+                message = safe_get(choices[0], "message") if choices else None
+                tool_calls = safe_get(message, "tool_calls")
 
-                # If TOOLS mode, tool_call_id is mandatory
-                if instructor_mode == instructor.Mode.TOOLS:
-                    if not hasattr(raw_completion.choices[0].message, "tool_calls"):
-                        raise MMCPError(
-                            "Protocol Corruption: LLM response missing tool_calls in TOOLS mode",
-                            trace_id=context.runtime.trace_id,
-                        )
-                    tool_calls = raw_completion.choices[0].message.tool_calls
-                    if not tool_calls or len(tool_calls) == 0:
-                        raise MMCPError(
-                            "Protocol Corruption: LLM response has empty tool_calls in TOOLS mode",
-                            trace_id=context.runtime.trace_id,
-                        )
-                    # Extract all tool call IDs for protocol compliance
+                # Add assistant message to history
+                if message:
+                    self.history_manager.add_llm_message(history, message, instructor_mode)
+
+                # Extract tool_call_id from raw completion (works for all modes)
+                if tool_calls:
+                    # We found tool calls in the transport layer.
+                    # Use the ID provided by the model (works for wrappers OR native calls).
                     all_tool_calls = tool_calls
-                    tool_call_id = tool_calls[0].id
-                    if not tool_call_id:
-                        raise MMCPError(
-                            "Protocol Corruption: tool_call missing ID in TOOLS mode",
-                            trace_id=context.runtime.trace_id,
-                        )
+                    call_id = safe_get(tool_calls[0], "id")
+                    if call_id:
+                        tool_call_id = call_id
+
                     if len(tool_calls) > 1:
                         logger.warning(
                             f"Multiple tool calls detected ({len(tool_calls)}). "
                             f"Executing primary tool, additional calls will receive error responses.",
                             extra={"trace_id": context.runtime.trace_id},
+                        )
+
+                # STRICT STATE PERSISTENCE: If TOOLS mode, tool_call_id is mandatory
+                if instructor_mode == instructor.Mode.TOOLS:
+                    if not tool_calls:
+                        raise MMCPError(
+                            "Protocol Corruption: LLM response missing tool_calls in TOOLS mode",
+                            trace_id=context.runtime.trace_id,
+                        )
+                    if len(tool_calls) == 0:
+                        raise MMCPError(
+                            "Protocol Corruption: LLM response has empty tool_calls in TOOLS mode",
+                            trace_id=context.runtime.trace_id,
+                        )
+                    if not tool_call_id:
+                        raise MMCPError(
+                            "Protocol Corruption: tool_call missing ID in TOOLS mode",
+                            trace_id=context.runtime.trace_id,
                         )
 
                 # Handle flattened tool call (has rationale field directly)
@@ -717,24 +732,24 @@ class ReActLoop:
 
     def _get_reasoned_response_model(self):
         """
-        Build the reasoned Union response model for single-turn HITL flow.
+        Build the reasoned response model list for single-turn HITL flow.
 
-        Returns Union[FinalResponse, ReasonedToolCall] where tool_call is
-        a Union of all available tool schemas.
+        Returns a list of Pydantic models (FinalResponse + extended tool schemas).
+        Passing a list to Instructor ensures native tool names without the "Response" wrapper.
         """
         from inspect import isclass
 
         from pydantic import BaseModel
 
-        tool_schemas = []
-        for tool in self.loader.tools.values():
+        tools_map = {}
+        for tool_name, tool in self.loader.tools.items():
             if hasattr(tool, "input_schema"):
                 schema = tool.input_schema
                 if schema and isclass(schema) and issubclass(schema, BaseModel):
-                    tool_schemas.append(schema)
+                    tools_map[tool_name] = schema
 
-        # Use get_reasoned_model to build the Union with ReasonedToolCall
-        return get_reasoned_model(tool_schemas)
+        # Use get_reasoned_model to build the list of models
+        return get_reasoned_model(tools_map)
 
     def _extract_error_message(self, error: Exception) -> str:
         """Extract user-friendly error message from exception."""
