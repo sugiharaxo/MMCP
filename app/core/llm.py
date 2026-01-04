@@ -21,23 +21,23 @@ logging.getLogger("LiteLLM").setLevel(logging.INFO)
 
 def unwrap_response(obj: Any) -> Any:
     """
-    Peeks inside synthetic 'Response' wrappers if Instructor creates them (primarily in JSON mode).
+    Safely unwraps Instructor's synthetic 'Response' or 'AgentTurn' wrappers.
 
     In Mode.TOOLS, Instructor returns the selected tool/model directly without wrapping.
     In Mode.JSON, Instructor may wrap the Union in a synthetic 'Response' object with a single field.
-    This function extracts the actual tool/model from the wrapper when needed.
+    This function extracts the actual tool/model from the wrapper when needed, but only for
+    known Instructor wrapper class names to prevent accidental unwrapping of legitimate
+    single-field user models.
     """
-    if obj is None:
-        return None
+    if obj is None or not isinstance(obj, BaseModel):
+        return obj
 
-    # If it's a Pydantic model with exactly one field (Instructor's 'Response' wrapper)
-    if isinstance(obj, BaseModel):
-        fields = list(type(obj).model_fields.keys())
-        if len(fields) == 1:
-            # Extract the inner object from the wrapper
-            field_name = fields[0]
-            return getattr(obj, field_name)
-
+    fields = list(obj.model_fields.keys())
+    # Instructor wrappers usually have exactly one field and generic names
+    if len(fields) == 1:
+        class_name = obj.__class__.__name__
+        if class_name in ("Response", "AgentTurn", "dynamic_response"):
+            return getattr(obj, fields[0])
     return obj
 
 
@@ -127,13 +127,14 @@ async def get_agent_decision(
     # In Mode.TOOLS, Union is treated as the toolset - model picks one, Instructor returns that single object
     # Instructor automatically converts Union members to native function calling format
     if isinstance(response_model, list):
-        if len(response_model) == 0:
+        if not response_model:
             raise ValueError("response_model list cannot be empty")
         elif len(response_model) == 1:
             actual_response_model = response_model[0]
         else:
             # Programmatically create Union[ToolA, ToolB, FinalResponse]
-            actual_response_model = Union[tuple(response_model)]
+            # Use Union.__getitem__ for proper dynamic Union creation (Python 3.10+)
+            actual_response_model = Union.__getitem__(tuple(response_model))
     else:
         actual_response_model = response_model
 

@@ -153,22 +153,7 @@ class ReActLoop:
                         )
 
                 # STRICT STATE PERSISTENCE: If TOOLS mode, tool_call_id is mandatory
-                if instructor_mode == instructor.Mode.TOOLS:
-                    if not tool_calls:
-                        raise MMCPError(
-                            "Protocol Corruption: LLM response missing tool_calls in TOOLS mode",
-                            trace_id=context.runtime.trace_id,
-                        )
-                    if len(tool_calls) == 0:
-                        raise MMCPError(
-                            "Protocol Corruption: LLM response has empty tool_calls in TOOLS mode",
-                            trace_id=context.runtime.trace_id,
-                        )
-                    if not tool_call_id:
-                        raise MMCPError(
-                            "Protocol Corruption: tool_call missing ID in TOOLS mode",
-                            trace_id=context.runtime.trace_id,
-                        )
+                self._validate_protocol(tool_calls, tool_call_id, instructor_mode, context)
                 # Handle reasoned tool call (single-turn atomic consistency)
                 result = await self._handle_reasoned_tool_call(
                     response,
@@ -234,22 +219,7 @@ class ReActLoop:
                         )
 
                 # STRICT STATE PERSISTENCE: If TOOLS mode, tool_call_id is mandatory
-                if instructor_mode == instructor.Mode.TOOLS:
-                    if not tool_calls:
-                        raise MMCPError(
-                            "Protocol Corruption: LLM response missing tool_calls in TOOLS mode",
-                            trace_id=context.runtime.trace_id,
-                        )
-                    if len(tool_calls) == 0:
-                        raise MMCPError(
-                            "Protocol Corruption: LLM response has empty tool_calls in TOOLS mode",
-                            trace_id=context.runtime.trace_id,
-                        )
-                    if not tool_call_id:
-                        raise MMCPError(
-                            "Protocol Corruption: tool_call missing ID in TOOLS mode",
-                            trace_id=context.runtime.trace_id,
-                        )
+                self._validate_protocol(tool_calls, tool_call_id, instructor_mode, context)
 
                 # Handle flattened tool call (has rationale field directly)
                 result = await self._handle_flattened_tool_call(
@@ -295,6 +265,33 @@ class ReActLoop:
             "I attempted to solve this but reached my reasoning limit. Please try being more specific or breaking down your request.",
             history,
         )
+
+    def _validate_protocol(
+        self,
+        tool_calls: list | None,
+        tool_call_id: str | None,
+        instructor_mode: instructor.Mode,
+        context: MMCPContext,
+    ) -> None:
+        """
+        Standardized protocol validation for TOOLS mode.
+
+        Ensures that when using Mode.TOOLS, the LLM response contains valid tool_calls
+        with proper IDs for protocol compliance (e.g., DeepSeek 1:1 pairing requirement).
+        """
+        if instructor_mode != instructor.Mode.TOOLS:
+            return
+
+        if not tool_calls:
+            raise MMCPError(
+                "Protocol Corruption: LLM response missing tool_calls in TOOLS mode",
+                trace_id=context.runtime.trace_id,
+            )
+        if not tool_call_id:
+            raise MMCPError(
+                "Protocol Corruption: tool_call missing ID in TOOLS mode",
+                trace_id=context.runtime.trace_id,
+            )
 
     async def _handle_llm_error(
         self,
