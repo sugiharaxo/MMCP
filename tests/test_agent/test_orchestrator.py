@@ -274,7 +274,9 @@ async def test_system_prompt_self_healing_filters_duplicates(orchestrator: Agent
 
     # Trigger the system prompt reconstruction (normally happens in chat())
     await orchestrator.context_manager.assemble_llm_context("test", context)
-    system_prompt = await orchestrator.context_manager.get_system_prompt(context)
+    static_instructions = await orchestrator.context_manager.get_static_instructions()
+    dynamic_state = await orchestrator.context_manager.get_dynamic_state(context)
+    system_prompt = f"{static_instructions}\n\n{dynamic_state}"
     new_system_message = {"role": "system", "content": system_prompt}
     non_system_messages = [m for m in history if m["role"] != "system"]
     reconstructed_history = [new_system_message] + non_system_messages
@@ -296,10 +298,11 @@ async def test_system_prompt_includes_context(orchestrator: AgentOrchestrator):
     context.llm.user_preferences = {"theme": "dark", "language": "en"}
     context.llm.media_state = {"jellyfin": {"server_url": "http://localhost:8096"}}
 
-    prompt = await orchestrator.context_manager.get_system_prompt(context)
+    static_instructions = await orchestrator.context_manager.get_static_instructions()
+    dynamic_state = await orchestrator.context_manager.get_dynamic_state(context)
+    prompt = f"{static_instructions}\n\n{dynamic_state}"
 
     # Should contain context data (raw, as plugins are responsible for sanitization)
-    assert "CONTEXT:" in prompt
     assert "User Preferences:" in prompt
     assert "Media State:" in prompt
     assert "theme" in prompt or "dark" in prompt  # Context should be included
@@ -317,7 +320,9 @@ async def test_system_prompt_reconstruction_works_on_empty_history(orchestrator:
 
     # This should work without errors
     await orchestrator.context_manager.assemble_llm_context("test", context)
-    system_prompt = await orchestrator.context_manager.get_system_prompt(context)
+    static_instructions = await orchestrator.context_manager.get_static_instructions()
+    dynamic_state = await orchestrator.context_manager.get_dynamic_state(context)
+    system_prompt = f"{static_instructions}\n\n{dynamic_state}"
     new_system_message = {"role": "system", "content": system_prompt}
     non_system_messages = [m for m in history if m["role"] != "system"]
     reconstructed_history = [new_system_message] + non_system_messages
