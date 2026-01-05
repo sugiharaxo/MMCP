@@ -6,9 +6,9 @@ import re
 import sys
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel
 
 from app.api.base import ContextProvider, Plugin, Tool
 from app.api.schemas import PluginRuntime, PluginStatus
@@ -74,60 +74,6 @@ class PluginLoader:
                 # Thread-safe cleanup - only remove if we added it
                 if added and plugin_path in sys.path:
                     sys.path.remove(plugin_path)
-
-    def _inject_tool_discriminator(self, tool: Tool) -> None:
-        """
-        Inject tool_call_id discriminator into tool's input schema.
-
-        This enables zero-boilerplate tool identification in Mode.JSON by automatically
-        adding a discriminator field that identifies which tool the LLM is calling.
-        The discriminator is stripped before execution, so plugin developers never see it.
-
-        Args:
-            tool: Tool instance with input_schema to patch
-        """
-        if not hasattr(tool, "input_schema") or not tool.input_schema:
-            return
-
-        orig_schema = tool.input_schema
-        tool_name = tool.name
-
-        # Check if discriminator already exists (prevents double-injection)
-        if hasattr(orig_schema, "model_fields") and "tool_call_id" in orig_schema.model_fields:
-            return
-
-        # Create new model with injected discriminator field
-        # Use Literal for strict discriminated union routing - Pydantic uses this to select the correct tool
-        # The tool_name variable works correctly with Pydantic's create_model at runtime
-        literal_annotation = Literal[tool_name]
-
-        patched_schema = create_model(
-            tool_name,
-            tool_call_id=(
-                literal_annotation,
-                Field(description=f"Tool identifier: {tool_name}"),
-            ),
-            __base__=orig_schema,
-            # Pass config during creation to ensure JSON schema is built correctly
-            __config__=ConfigDict(title=tool_name),
-        )
-        # NOTE: If OpenAI's strict=True mode is enabled in the future, the default value
-        # for tool_call_id might need to be removed (make it required instead).
-        # Current Literal + default approach is compatible with Ollama and Anthropic.
-
-        # Swap the schema (transparent to plugin developer)
-        tool.input_schema = patched_schema
-
-        # Update schema-to-tool mapping for both original and patched schemas
-        self._schema_to_tool[patched_schema] = tool
-        # Keep original mapping for backward compatibility
-        if orig_schema not in self._schema_to_tool:
-            self._schema_to_tool[orig_schema] = tool
-
-        logger.debug(
-            f"Injected discriminator '{tool_name}' into schema {orig_schema.__name__}. "
-            f"Fields: {list(patched_schema.model_fields.keys())}"
-        )
 
     @staticmethod
     def _slugify_plugin_name(name: str) -> str:
@@ -349,13 +295,9 @@ class PluginLoader:
                     )
 
                 if available:
-                    # Inject tool_call_id discriminator for zero-boilerplate routing
-                    self._inject_tool_discriminator(tool)
                     self.tools[tool.name] = tool
                     logger.info(f"Loaded Tool: {tool.name} (v{tool.version})")
                 else:
-                    # Also inject for standby tools (they may become available later)
-                    self._inject_tool_discriminator(tool)
                     self.standby_tools[tool.name] = tool
                     config_error = self._plugin_config_errors.get(plugin.name)
                     reason = f" - {config_error}" if config_error else ""

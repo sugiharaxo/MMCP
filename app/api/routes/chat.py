@@ -10,9 +10,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.agent.orchestrator import AgentOrchestrator
 from app.agent.schemas import ActionRequestResponse
 from app.core.errors import StaleApprovalError
+from app.services.agent import AgentService
 
 
 class ChatRequest(BaseModel):
@@ -40,14 +40,14 @@ class ActionResponse(BaseModel):
 router = APIRouter(prefix="/api/v1", tags=["chat"])
 
 
-def get_orchestrator(request: Request) -> AgentOrchestrator:
-    """Dependency to get AgentOrchestrator instance from app state."""
-    return request.app.state.orchestrator
+def get_agent_service(request: Request) -> AgentService:
+    """Dependency to get AgentService instance from app state."""
+    return request.app.state.agent_service
 
 
 @router.post("/chat")
 async def chat_endpoint(
-    chat_request: ChatRequest, orchestrator: AgentOrchestrator = Depends(get_orchestrator)
+    chat_request: ChatRequest, agent_service: AgentService = Depends(get_agent_service)
 ):
     """
     Main chat endpoint for AG-UI.
@@ -61,12 +61,14 @@ async def chat_endpoint(
     from app.core.logger import logger
 
     try:
-        # Use the orchestrator instance from app state
+        # Use the agent service instance from app state
         logger.info(
             f"Chat request received: message='{chat_request.message[:50]}...', "
             f"session_id={chat_request.session_id}"
         )
-        response = await orchestrator.chat(chat_request.message, chat_request.session_id)
+        response = await agent_service.process_message(
+            chat_request.message, chat_request.session_id
+        )
 
         # Check if this is an ActionRequestResponse (HITL interruption)
         if isinstance(response, ActionRequestResponse):
@@ -99,7 +101,7 @@ async def chat_endpoint(
 
 @router.post("/chat/respond")
 async def respond_to_action(
-    action_response: ActionResponse, orchestrator: AgentOrchestrator = Depends(get_orchestrator)
+    action_response: ActionResponse, agent_service: AgentService = Depends(get_agent_service)
 ):
     """
     Respond to a pending external tool action in chat.
@@ -114,9 +116,8 @@ async def respond_to_action(
             f"approval_id={action_response.approval_id}, decision={action_response.decision}"
         )
         was_approved = action_response.decision == Decision.APPROVE
-        response = await orchestrator.resume_action(
-            action_response.approval_id, action_response.session_id, was_approved=was_approved
-        )
+        # TODO: Implement resume_action in AgentService
+        response = f"Action {'approved' if was_approved else 'denied'} - not yet implemented in new architecture"
         return JSONResponse(
             status_code=status.HTTP_200_OK,
             content={"response": str(response), "type": "regular"},
