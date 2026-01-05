@@ -73,8 +73,7 @@ async def get_agent_decision(
     Executes a structured LLM call and returns both the parsed object and raw metadata.
 
     This function handles the conversion of multiple tool schemas into a single Union
-    and uses Instructor's event system to capture LiteLLM completion metadata (like usage
-    and tool_call_ids) without triggering common library-level attribute errors.
+    and uses Instructor to get both structured output and raw LiteLLM completion metadata.
 
     Args:
         messages: Conversation history in OpenAI-style format.
@@ -148,41 +147,27 @@ async def get_agent_decision(
     if user_settings.llm_base_url:
         kwargs["base_url"] = user_settings.llm_base_url
 
-    # Hook-based metadata capture (avoids AttributeError with Union types)
+    # BUG: Instructor create_with_completion fails on Union types (AttributeError on _raw_response)
+    # This is a documented limitation - we must use hooks for metadata capture with tool Unions
+
     raw_completion = None
 
     def capture_metadata(completion: Any) -> None:
-        """Hook: Captures the raw LiteLLM completion before Instructor parses it."""
         nonlocal raw_completion
         raw_completion = completion
 
-    # Register the hook to capture raw completion
-    # Hooks are required for metadata capture - fail fast if unavailable
+    # Register the hook (The only way to safely get metadata for Unions)
+    # Using 'on' handles the metadata interception before Instructor attempts
+    # the failing attribute patch.
     if hasattr(client, "on"):
-        try:
-            client.on("completion:response", capture_metadata)
-        except (AttributeError, TypeError) as e:
-            raise ValueError(
-                "Instructor hooks not available: required for metadata capture. "
-                f"Client does not support 'on' method: {e}"
-            ) from e
+        client.on("completion:response", capture_metadata)
     elif hasattr(client.chat.completions, "on"):
-        try:
-            client.chat.completions.on("completion:response", capture_metadata)
-        except (AttributeError, TypeError) as e:
-            raise ValueError(
-                "Instructor hooks not available: required for metadata capture. "
-                f"Client.chat.completions does not support 'on' method: {e}"
-            ) from e
+        client.chat.completions.on("completion:response", capture_metadata)
     else:
-        raise ValueError(
-            "Instructor hooks not available: required for metadata capture. "
-            "Client does not support hook registration via 'on' method."
-        )
+        raise ValueError("Instructor client does not support hook registration")
 
     try:
-        # Use create() instead of create_with_completion() to avoid AttributeError
-        # The hook captures the raw completion metadata
+        # Use standard .create() - NOT create_with_completion()
         parsed_output = await client.chat.completions.create(**kwargs)
 
         # Unwrap in case JSON mode added a synthetic wrapper
@@ -191,14 +176,11 @@ async def get_agent_decision(
         if parsed_object is None:
             raise ValueError("LLM returned no valid objects")
 
-        # Verify hook captured metadata (should always succeed if hook registration succeeded)
-        if raw_completion is None or not hasattr(raw_completion, "choices"):
-            raise ValueError(
-                "Transport Error: Hook did not capture raw completion metadata. "
-                "This indicates an Instructor internal error."
-            )
+        if raw_completion is None:
+            raise ValueError("Transport Error: Metadata hook failed to capture response.")
 
         return parsed_object, raw_completion
+
     except Exception as e:
         # Log the actual error for debugging
         logger.error(
@@ -215,14 +197,11 @@ async def get_agent_decision(
         # Re-raise to be handled by orchestrator's error mapping
         raise
     finally:
-        # Always clean up hooks to prevent memory leaks in long-running servers
-        try:
-            if hasattr(client, "off"):
-                client.off("completion:response", capture_metadata)
-            elif hasattr(client.chat.completions, "off"):
-                client.chat.completions.off("completion:response", capture_metadata)
-        except (AttributeError, TypeError):
-            pass  # Hook cleanup not available, continue
+        # Mandatory cleanup to prevent memory leaks/double-firing
+        if hasattr(client, "off"):
+            client.off("completion:response", capture_metadata)
+        elif hasattr(client.chat.completions, "off"):
+            client.chat.completions.off("completion:response", capture_metadata)
 
 
 async def generate_dialogue(
@@ -289,7 +268,21 @@ async def generate_dialogue(
     try:
         # Use raw litellm completion for dialogue generation (not structured)
         response = await litellm.acompletion(**kwargs)
-        return response.choices[0].message.content
+
+        # Safely extract content using safe_get
+        choices = safe_get(response, "choices")
+        if not choices:
+            raise ValueError("No choices returned in dialogue response")
+
+        message = safe_get(choices[0], "message")
+        if not message:
+            raise ValueError("No message returned in dialogue response")
+
+        content = safe_get(message, "content")
+        if content is None:
+            raise ValueError("No content returned in dialogue message")
+
+        return content
     except Exception as e:
         # Log the raw error with full context
         logger.error(

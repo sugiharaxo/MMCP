@@ -1,4 +1,4 @@
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field, create_model
 
@@ -20,19 +20,6 @@ class MMCPToolAction(BaseModel):
     rationale: str = Field(default="", description="Internal reasoning for this action")
 
 
-class ReasonedToolCall(BaseModel):
-    """
-    Tool call with rationale for single-turn reasoned HITL flow (legacy wrapper).
-
-    NOTE: This is kept for backward compatibility. New flattened structure uses
-    MMCPToolAction base class directly on tool schemas.
-    """
-
-    type: Literal["reasoned_tool_call"] = "reasoned_tool_call"
-    rationale: str = Field(description="Concise explanation of why this tool is being used")
-    tool_call: Any = Field(description="The specific tool schema (populated dynamically)")
-
-
 class ActionRequestResponse(BaseModel):
     """Response when agent needs user approval for external action."""
 
@@ -44,19 +31,6 @@ class ActionRequestResponse(BaseModel):
     tool_call_id: str | None = Field(
         default=None,
         description="Tool call ID from LLM for matching results (DeepSeek 1:1 pairing)",
-    )
-
-
-class AgentTurn(BaseModel):
-    """
-    The unified container for every agent turn (legacy wrapper).
-
-    NOTE: This wrapper is no longer needed with flattened Union structure.
-    Kept for backward compatibility during migration.
-    """
-
-    action: FinalResponse | ReasonedToolCall = Field(
-        description="The agent's action: either a final response or a reasoned tool call"
     )
 
 

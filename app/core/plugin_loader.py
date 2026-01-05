@@ -122,6 +122,11 @@ class PluginLoader:
         if orig_schema not in self._schema_to_tool:
             self._schema_to_tool[orig_schema] = tool
 
+        logger.debug(
+            f"Injected discriminator '{tool_name}' into schema {orig_schema.__name__}. "
+            f"Fields: {list(patched_schema.model_fields.keys())}"
+        )
+
     @staticmethod
     def _slugify_plugin_name(name: str) -> str:
         """
@@ -366,6 +371,13 @@ class PluginLoader:
 
                 self.context_providers[provider.context_key] = provider
                 logger.info(f"Loaded Context Provider: {provider.context_key}")
+
+        # Registry dump: list all successfully registered tools
+        if self.tools:
+            tool_names = sorted(self.tools.keys())
+            logger.info(f"Plugin discovery complete. Registered tools: {', '.join(tool_names)}")
+        else:
+            logger.info("Plugin discovery complete. No tools registered.")
 
     async def _load_plugin_settings_for_plugin(
         self, plugin_instance: Plugin

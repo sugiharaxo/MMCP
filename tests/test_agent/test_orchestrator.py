@@ -4,10 +4,10 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from app.agent.orchestrator import AgentOrchestrator
-from app.agent.schemas import FinalResponse, ReasonedToolCall
+from app.agent.schemas import FinalResponse, MMCPToolAction
 
 
 def create_mock_raw_completion(has_tool_calls: bool = False, tool_call_id: str | None = None):
@@ -45,9 +45,9 @@ def mock_loader():
     return loader
 
 
-# Define a test tool input schema for testing
-class ToolInputSchema(BaseModel):
-    """Test tool input schema."""
+# Define a test tool input schema for testing (flattened structure)
+class ToolInputSchema(MMCPToolAction):
+    """Test tool input schema with flattened rationale."""
 
     tool_call_id: str = Field(default="test_tool", description="Tool identifier")
     param: str = Field(..., description="Test parameter")
@@ -109,10 +109,9 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
     # Mock plugin settings (None for tools without settings) - stored by plugin_name
     orchestrator.loader._plugin_settings = {"test_plugin": None}
 
-    # First call: reasoned tool call, Second call: final response
-    tool_input = ToolInputSchema(param="value")
-    reasoned_tool_call = ReasonedToolCall(
-        rationale="Need to execute test tool", tool_call=tool_input
+    # First call: flattened tool call, Second call: final response
+    tool_input = ToolInputSchema(
+        rationale="Need to execute test tool", tool_call_id="test_tool", param="value"
     )
     final_response = FinalResponse(thought="Tool executed successfully", answer="Done")
 
@@ -125,7 +124,7 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
             raw_completion = create_mock_raw_completion(
                 has_tool_calls=True, tool_call_id="test-tool-call-1"
             )
-            return (reasoned_tool_call, raw_completion)
+            return (tool_input, raw_completion)
         else:
             raw_completion = create_mock_raw_completion(has_tool_calls=False)
             return (final_response, raw_completion)
@@ -153,9 +152,8 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
 @pytest.mark.asyncio
 async def test_chat_tool_not_found(orchestrator: AgentOrchestrator):
     """Test that chat handles missing tools gracefully."""
-    tool_input = ToolInputSchema(param="value")
-    reasoned_tool_call = ReasonedToolCall(
-        rationale="Need to execute test tool", tool_call=tool_input
+    tool_input = ToolInputSchema(
+        rationale="Need to execute test tool", tool_call_id="test_tool", param="value"
     )
     final_response = FinalResponse(
         thought="Tool missing, responding anyway", answer="Tool not found, but continuing"
@@ -172,7 +170,7 @@ async def test_chat_tool_not_found(orchestrator: AgentOrchestrator):
             raw_completion = create_mock_raw_completion(
                 has_tool_calls=True, tool_call_id="test-tool-call-1"
             )
-            return (reasoned_tool_call, raw_completion)
+            return (tool_input, raw_completion)
         else:
             raw_completion = create_mock_raw_completion(has_tool_calls=False)
             return (final_response, raw_completion)
@@ -196,9 +194,8 @@ async def test_chat_tool_not_found(orchestrator: AgentOrchestrator):
 @pytest.mark.asyncio
 async def test_chat_max_steps(orchestrator: AgentOrchestrator):
     """Test that chat stops after max steps."""
-    tool_input = ToolInputSchema(param="value")
-    reasoned_tool_call = ReasonedToolCall(
-        rationale="Need to execute test tool", tool_call=tool_input
+    tool_input = ToolInputSchema(
+        rationale="Need to execute test tool", tool_call_id="test_tool", param="value"
     )
 
     mock_tool = MagicMock()
@@ -213,7 +210,7 @@ async def test_chat_max_steps(orchestrator: AgentOrchestrator):
         raw_completion = create_mock_raw_completion(
             has_tool_calls=True, tool_call_id="test-tool-call-1"
         )
-        mock_llm.return_value = (reasoned_tool_call, raw_completion)  # Always return tool call
+        mock_llm.return_value = (tool_input, raw_completion)  # Always return tool call
 
         result = await orchestrator.chat("Test message")
 
