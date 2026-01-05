@@ -108,7 +108,7 @@ class HistoryManager:
             # Auto-detect mode if not provided
             from app.core.llm import get_instructor_mode
 
-            instructor_mode = get_instructor_mode(user_settings.llm_model)
+            instructor_mode = get_instructor_mode(user_settings)
 
         if instructor_mode == instructor.Mode.TOOLS:
             # Native tool calling format (OpenAI, Gemini, Claude, DeepSeek)

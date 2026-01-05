@@ -81,9 +81,11 @@ def get_reasoned_model(tools_map: dict[str, type[BaseModel]]) -> list[type[BaseM
     for tool_name, tool_schema in tools_map.items():
         type_value = f"tool_{tool_name}"
 
+        # Use tool name directly as model name since tool names are guaranteed unique.
+        # The model name is only for Python's internal registry, not sent to the LLM.
         # Inject reasoning ONLY into plugin tools
         extended_tool = create_model(
-            tool_schema.__name__,
+            tool_name,
             __base__=(tool_schema, MMCPToolAction),
             type=(Literal[type_value], Field(default=type_value)),
             __module__=__name__,

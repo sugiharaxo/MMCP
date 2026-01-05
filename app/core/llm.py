@@ -8,7 +8,7 @@ import litellm
 from litellm import acompletion
 from pydantic import BaseModel
 
-from app.core.config import internal_settings, user_settings
+from app.core.config import UserSettings, internal_settings, user_settings
 from app.core.logger import logger
 
 # Hard-suppress LiteLLM verbose output to prevent "Provider List" spam
@@ -42,42 +42,24 @@ def unwrap_response(obj: Any) -> Any:
     return obj
 
 
-def get_instructor_mode(model_name: str | None = None) -> instructor.Mode:
+def get_instructor_mode(user_settings: UserSettings) -> instructor.Mode:
     """
-    Get Instructor mode from config profile, with fallback to auto-detection.
-
-    Args:
-        model_name: Optional model identifier (uses user_settings.llm_model if not provided)
-
-    Returns:
-        Instructor Mode enum value
+    Returns the user's configured mode.
+    The settings system handles the defaults/fallbacks at the DB/Env level.
     """
-    from app.core.config import default_profile, model_profiles, user_settings
+    mode_str = user_settings.instructor_mode.lower()
+    mode_map = {
+        "tool_call": instructor.Mode.TOOLS,
+        "tools": instructor.Mode.TOOLS,
+        "json": instructor.Mode.JSON,
+        "markdown_json": instructor.Mode.MD_JSON,
+        "md_json": instructor.Mode.MD_JSON,
+    }
+    if mode_str in mode_map:
+        return mode_map[mode_str]
 
-    # Use provided model_name or fallback to user_settings
-    model = model_name or user_settings.llm_model
-
-    # Get profile for this model (or use default)
-    profile = model_profiles.get(model, default_profile)
-
-    # Check if profile has explicit instructor_mode
-    if hasattr(profile, "reasoning") and hasattr(profile.reasoning, "instructor_mode"):
-        mode_str = profile.reasoning.instructor_mode.lower()
-        mode_map = {
-            "tool_call": instructor.Mode.TOOLS,
-            "json": instructor.Mode.JSON,
-            "markdown_json": instructor.Mode.MD_JSON,
-        }
-        if mode_str in mode_map:
-            return mode_map[mode_str]
-
-    # Fallback to auto-detection based on model name
-    model_lower = model.lower()
-    if any(
-        provider in model_lower for provider in ["gemini", "gpt-", "claude", "azure", "deepseek"]
-    ):
-        return instructor.Mode.TOOLS
-    return instructor.Mode.JSON  # Fallback for Ollama/Local models
+    # Safe fallback for invalid values
+    return instructor.Mode.JSON
 
 
 async def get_agent_decision(
@@ -121,7 +103,7 @@ async def get_agent_decision(
     profile = model_profiles.get(user_settings.llm_model, default_profile)
 
     # Use the User's preferred mode (mode-agnostic - works for all Instructor modes)
-    instructor_mode = get_instructor_mode(user_settings.llm_model)
+    instructor_mode = get_instructor_mode(user_settings)
     client = instructor.from_litellm(acompletion, mode=instructor_mode)
 
     # Convert list to direct Union (DO NOT use Iterable)
