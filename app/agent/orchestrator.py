@@ -248,7 +248,6 @@ class AgentOrchestrator:
                     context = MMCPContext(trace_id=trace_id or f"resumed-{approval_id}")
                     context.set_available_tools(self.loader.list_tools())
 
-                    tool_schema = tool.input_schema
                     # Create clean payload by excluding any system keys that might have leaked
                     payload = {
                         k: v
@@ -256,7 +255,10 @@ class AgentOrchestrator:
                         if k not in {"tool_call_id", "rationale", "type"}
                     }
 
-                    tool_call_data = tool_schema.model_construct(tool_call_id=tool_name, **payload)
+                    # Explicitly set rationale and type since model_construct bypasses default values
+                    tool_call_data = tool.input_schema.model_construct(
+                        tool_call_id=tool_name, rationale="", type=f"tool_{tool_name}", **payload
+                    )
 
                     context.is_approved = True
                     result, _ = await self.react_loop.safe_tool_call(tool_call_data, context)

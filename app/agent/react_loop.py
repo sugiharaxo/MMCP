@@ -405,9 +405,11 @@ class ReActLoop:
             return error_msg, True
 
         if tool.classification == "EXTERNAL" and not getattr(context, "is_approved", False):
+            # Safely access rationale with default (may not exist if constructed from base schema)
+            rationale = getattr(tool_call_data, "rationale", "")
             return ActionRequestResponse(
                 approval_id=str(uuid.uuid4()),
-                explanation=sanitize_explanation(tool_call_data.rationale),
+                explanation=sanitize_explanation(rationale),
                 tool_name=tool_name,
                 # Be explicit: tool_args is ONLY the payload - exclude all system fields
                 tool_args=tool_call_data.model_dump(exclude={"tool_call_id", "rationale", "type"}),
