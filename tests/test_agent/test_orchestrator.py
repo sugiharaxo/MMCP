@@ -49,6 +49,7 @@ def mock_loader():
 class ToolInputSchema(BaseModel):
     """Test tool input schema."""
 
+    tool_call_id: str = Field(default="test_tool", description="Tool identifier")
     param: str = Field(..., description="Test parameter")
 
 
@@ -92,9 +93,10 @@ async def test_chat_tool_call(orchestrator: AgentOrchestrator):
 
     mock_tool = MagicMock()
     mock_tool.name = "test_tool"
+    mock_tool.classification = "INTERNAL"  # Mark as internal to avoid HITL
     mock_tool.plugin_name = "test_plugin"  # Set plugin_name attribute
     mock_tool.execute = AsyncMock(return_value={"result": "Tool executed"})
-    orchestrator.loader.get_tool_by_schema.return_value = mock_tool
+    orchestrator.loader.get_tool.return_value = mock_tool
     orchestrator.loader.standby_tools = {}  # Ensure tool is not in standby
     # Mock create_plugin_runtime to return a real PluginRuntime
     from app.core.config import CoreSettings
@@ -159,7 +161,7 @@ async def test_chat_tool_not_found(orchestrator: AgentOrchestrator):
         thought="Tool missing, responding anyway", answer="Tool not found, but continuing"
     )
 
-    orchestrator.loader.get_tool_by_schema.return_value = None
+    orchestrator.loader.get_tool.return_value = None
 
     call_count = 0
 
@@ -203,7 +205,7 @@ async def test_chat_max_steps(orchestrator: AgentOrchestrator):
     mock_tool.name = "test_tool"
     mock_tool.classification = "INTERNAL"  # Mark as internal to avoid HITL
     mock_tool.execute = AsyncMock(return_value={"result": "ok"})
-    orchestrator.loader.get_tool_by_schema.return_value = mock_tool
+    orchestrator.loader.get_tool.return_value = mock_tool
 
     with patch(
         "app.agent.llm_interface.LLMInterface.get_reasoned_decision", new_callable=AsyncMock
@@ -274,7 +276,9 @@ async def test_system_prompt_self_healing_filters_duplicates(orchestrator: Agent
 
     # Trigger the system prompt reconstruction (normally happens in chat())
     await orchestrator.context_manager.assemble_llm_context("test", context)
-    system_prompt = await orchestrator.context_manager.get_system_prompt(context)
+    static_instructions = await orchestrator.context_manager.get_static_instructions()
+    dynamic_state = await orchestrator.context_manager.get_dynamic_state(context)
+    system_prompt = f"{static_instructions}\n\n{dynamic_state}"
     new_system_message = {"role": "system", "content": system_prompt}
     non_system_messages = [m for m in history if m["role"] != "system"]
     reconstructed_history = [new_system_message] + non_system_messages
@@ -296,10 +300,11 @@ async def test_system_prompt_includes_context(orchestrator: AgentOrchestrator):
     context.llm.user_preferences = {"theme": "dark", "language": "en"}
     context.llm.media_state = {"jellyfin": {"server_url": "http://localhost:8096"}}
 
-    prompt = await orchestrator.context_manager.get_system_prompt(context)
+    static_instructions = await orchestrator.context_manager.get_static_instructions()
+    dynamic_state = await orchestrator.context_manager.get_dynamic_state(context)
+    prompt = f"{static_instructions}\n\n{dynamic_state}"
 
     # Should contain context data (raw, as plugins are responsible for sanitization)
-    assert "CONTEXT:" in prompt
     assert "User Preferences:" in prompt
     assert "Media State:" in prompt
     assert "theme" in prompt or "dark" in prompt  # Context should be included
@@ -317,7 +322,9 @@ async def test_system_prompt_reconstruction_works_on_empty_history(orchestrator:
 
     # This should work without errors
     await orchestrator.context_manager.assemble_llm_context("test", context)
-    system_prompt = await orchestrator.context_manager.get_system_prompt(context)
+    static_instructions = await orchestrator.context_manager.get_static_instructions()
+    dynamic_state = await orchestrator.context_manager.get_dynamic_state(context)
+    system_prompt = f"{static_instructions}\n\n{dynamic_state}"
     new_system_message = {"role": "system", "content": system_prompt}
     non_system_messages = [m for m in history if m["role"] != "system"]
     reconstructed_history = [new_system_message] + non_system_messages

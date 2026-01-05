@@ -59,6 +59,9 @@ class AgentOrchestrator:
         self.notification_injector = AgentNotificationInjector(self.event_bus)
         self.context_manager = ContextManager(loader, self.notification_injector, self.health)
 
+        # Cache static instructions for KV cache persistence
+        self._cached_static_instructions: str | None = None
+
     async def _emit_status(
         self,
         message: str,
@@ -147,7 +150,7 @@ class AgentOrchestrator:
                     tool_name = pending_action["tool_name"]
                     tool_args = pending_action["tool_args"]
                     # Determine instructor mode to format messages correctly
-                    instructor_mode = get_instructor_mode(user_settings.llm_model)
+                    instructor_mode = get_instructor_mode(user_settings)
 
                     # STRICT STATE PERSISTENCE: Extract exactly what the LLM gave us
                     # Mode-aware extraction: Only extract tool_call_id for TOOLS mode
@@ -245,13 +248,14 @@ class AgentOrchestrator:
                     context = MMCPContext(trace_id=trace_id or f"resumed-{approval_id}")
                     context.set_available_tools(self.loader.list_tools())
 
-                    # Use react loop's safe_tool_call for consistency
-                    # Note: Tool is already approved, so classification logging happens in safe_tool_call
-                    result, _ = await self.react_loop.safe_tool_call(
-                        tool, tool_name, tool_args, context
+                    tool_schema = tool.input_schema
+                    tool_call_data = tool_schema.model_construct(
+                        tool_call_id=tool_name, **tool_args
                     )
 
-                    # Add result using mode-aware history manager
+                    context.is_approved = True
+                    result, _ = await self.react_loop.safe_tool_call(tool_call_data, context)
+
                     self.history_manager.add_tool_result(
                         history, tool_call_id, result, instructor_mode=instructor_mode
                     )
@@ -356,14 +360,18 @@ class AgentOrchestrator:
 
         # Global agent turn lock for causal serialization
         async with self.event_bus.get_agent_turn_lock():
-            # Delegate to ReAct loop with system prompt
-            system_prompt = await self.context_manager.get_system_prompt(context)
+            if self._cached_static_instructions is None:
+                self._cached_static_instructions = (
+                    await self.context_manager.get_static_instructions()
+                )
+            dynamic_prompt = await self.context_manager.get_dynamic_state(context)
+            system_prompts = (self._cached_static_instructions, dynamic_prompt)
 
             # UNPACK TUPLE: Result and Updated History
             # Handle None user_input for action resumption (pass empty string to react loop)
             react_user_input = user_input if user_input is not None else ""
             result, updated_history = await self.react_loop.execute_turn(
-                react_user_input, history, context, system_prompt, self.notification_injector
+                react_user_input, history, context, system_prompts, self.notification_injector
             )
 
             # Handle Session Persistence

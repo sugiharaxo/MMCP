@@ -6,9 +6,9 @@ import re
 import sys
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, create_model
 
 from app.api.base import ContextProvider, Plugin, Tool
 from app.api.schemas import PluginRuntime, PluginStatus
@@ -75,6 +75,53 @@ class PluginLoader:
                 if added and plugin_path in sys.path:
                     sys.path.remove(plugin_path)
 
+    def _inject_tool_discriminator(self, tool: Tool) -> None:
+        """
+        Inject tool_call_id discriminator into tool's input schema.
+
+        This enables zero-boilerplate tool identification in Mode.JSON by automatically
+        adding a discriminator field that identifies which tool the LLM is calling.
+        The discriminator is stripped before execution, so plugin developers never see it.
+
+        Args:
+            tool: Tool instance with input_schema to patch
+        """
+        if not hasattr(tool, "input_schema") or not tool.input_schema:
+            return
+
+        orig_schema = tool.input_schema
+        tool_name = tool.name
+
+        # Check if discriminator already exists (prevents double-injection)
+        if hasattr(orig_schema, "model_fields") and "tool_call_id" in orig_schema.model_fields:
+            return
+
+        # Create new model with injected discriminator field
+        # Use Literal for strict discriminated union routing - Pydantic uses this to select the correct tool
+        # The tool_name variable works correctly with Pydantic's create_model at runtime
+        literal_annotation = Literal[tool_name]
+
+        patched_schema = create_model(
+            tool_name,
+            tool_call_id=(
+                literal_annotation,
+                Field(default=tool_name, description=f"Tool identifier: {tool_name}"),
+            ),
+            __base__=orig_schema,
+        )
+        # NOTE: If OpenAI's strict=True mode is enabled in the future, the default value
+        # for tool_call_id might need to be removed (make it required instead).
+        # Current Literal + default approach is compatible with Ollama and Anthropic.
+
+        # Swap the schema (transparent to plugin developer)
+        tool.input_schema = patched_schema
+
+        # Update schema-to-tool mapping for both original and patched schemas
+        self._schema_to_tool[patched_schema] = tool
+        # Keep original mapping for backward compatibility
+        if orig_schema not in self._schema_to_tool:
+            self._schema_to_tool[orig_schema] = tool
+
     @staticmethod
     def _slugify_plugin_name(name: str) -> str:
         """
@@ -139,8 +186,8 @@ class PluginLoader:
             for node in ast.walk(tree):
                 # We look for the literal name "Plugin" in the bases
                 if isinstance(node, ast.ClassDef) and any(
-                    (isinstance(base, ast.Name) and base.id == "Plugin") or
-                    (isinstance(base, ast.Attribute) and base.attr == "Plugin")
+                    (isinstance(base, ast.Name) and base.id == "Plugin")
+                    or (isinstance(base, ast.Attribute) and base.attr == "Plugin")
                     for base in node.bases
                 ):
                     return True
@@ -276,12 +323,32 @@ class PluginLoader:
                     logger.warning(f"Error checking availability for {tool.name}: {e}")
                     available = False
 
+                # Fail fast on duplicate tool names - tool names must be globally unique
+                if tool.name in self.tools:
+                    existing_tool = self.tools[tool.name]
+                    raise ValueError(
+                        f"Duplicate tool name '{tool.name}' detected. "
+                        f"Tool from plugin '{tool.plugin_name}' conflicts with existing tool "
+                        f"from plugin '{existing_tool.plugin_name}'. "
+                        f"Tool names must be globally unique across all plugins."
+                    )
+                if tool.name in self.standby_tools:
+                    existing_tool = self.standby_tools[tool.name]
+                    raise ValueError(
+                        f"Duplicate tool name '{tool.name}' detected. "
+                        f"Tool from plugin '{tool.plugin_name}' conflicts with existing standby tool "
+                        f"from plugin '{existing_tool.plugin_name}'. "
+                        f"Tool names must be globally unique across all plugins."
+                    )
+
                 if available:
+                    # Inject tool_call_id discriminator for zero-boilerplate routing
+                    self._inject_tool_discriminator(tool)
                     self.tools[tool.name] = tool
-                    if hasattr(tool, "input_schema") and tool.input_schema:
-                        self._schema_to_tool[tool.input_schema] = tool
                     logger.info(f"Loaded Tool: {tool.name} (v{tool.version})")
                 else:
+                    # Also inject for standby tools (they may become available later)
+                    self._inject_tool_discriminator(tool)
                     self.standby_tools[tool.name] = tool
                     config_error = self._plugin_config_errors.get(plugin.name)
                     reason = f" - {config_error}" if config_error else ""
@@ -363,33 +430,6 @@ class PluginLoader:
     def get_tool(self, name: str) -> Tool | None:
         """Get tool from active tools or standby tools."""
         return self.tools.get(name) or self.standby_tools.get(name)
-
-    def get_tool_by_schema(self, schema_class: type[BaseModel]) -> Tool | None:
-        """
-        Get tool instance by its input_schema Pydantic model class.
-
-        Used to map LLM tool call responses (which are instances of tool input schemas)
-        back to the tool instance that should execute them.
-
-        Checks active tools first, then standby tools.
-
-        Args:
-            schema_class: The Pydantic model class (e.g., TMDbMetadataInput)
-
-        Returns:
-            The Tool instance that uses this schema, or None if not found
-        """
-        # Check active tools first
-        tool = self._schema_to_tool.get(schema_class)
-        if tool:
-            return tool
-
-        # Check standby tools
-        for standby_tool in self.standby_tools.values():
-            if hasattr(standby_tool, "input_schema") and standby_tool.input_schema == schema_class:
-                return standby_tool
-
-        return None
 
     def list_tools(self) -> dict[str, str]:
         """Returns a dict of {name: description} for the Agent."""

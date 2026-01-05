@@ -6,8 +6,9 @@ from typing import Any
 import instructor
 import litellm
 from litellm import acompletion
+from pydantic import BaseModel
 
-from app.core.config import internal_settings, user_settings
+from app.core.config import UserSettings, internal_settings, user_settings
 from app.core.logger import logger
 
 # Hard-suppress LiteLLM verbose output to prevent "Provider List" spam
@@ -15,88 +16,84 @@ litellm.set_verbose = False
 litellm.suppress_debug_info = True
 litellm.drop_params = True  # Prevents "unsupported param" warnings
 litellm.add_known_names = False  # Stops the "Did you mean...?" provider list logic
-logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
+logging.getLogger("LiteLLM").setLevel(logging.INFO)
 
 
-def get_instructor_mode(model_name: str | None = None) -> instructor.Mode:
+def unwrap_response(obj: Any) -> Any:
     """
-    Get Instructor mode from config profile, with fallback to auto-detection.
+    Safely unwraps Instructor's synthetic 'Response' or 'AgentTurn' wrappers.
 
-    Args:
-        model_name: Optional model identifier (uses user_settings.llm_model if not provided)
-
-    Returns:
-        Instructor Mode enum value
+    In Mode.TOOLS, Instructor returns the selected tool/model directly without wrapping.
+    In Mode.JSON, Instructor may wrap the Union in a synthetic 'Response' object with a single field.
+    This function extracts the actual tool/model from the wrapper when needed, but only for
+    known Instructor wrapper class names to prevent accidental unwrapping of legitimate
+    single-field user models.
     """
-    from app.core.config import default_profile, model_profiles, user_settings
+    if obj is None or not isinstance(obj, BaseModel):
+        return obj
 
-    # Use provided model_name or fallback to user_settings
-    model = model_name or user_settings.llm_model
+    # Access model_fields from the class (not instance) to avoid Pydantic V2.11+ deprecation
+    fields = list(obj.__class__.model_fields.keys())
+    # Instructor wrappers usually have exactly one field and generic names
+    if len(fields) == 1:
+        class_name = obj.__class__.__name__
+        if class_name in ("Response", "AgentTurn", "dynamic_response"):
+            return getattr(obj, fields[0])
+    return obj
 
-    # Get profile for this model (or use default)
-    profile = model_profiles.get(model, default_profile)
 
-    # Check if profile has explicit instructor_mode
-    if hasattr(profile, "reasoning") and hasattr(profile.reasoning, "instructor_mode"):
-        mode_str = profile.reasoning.instructor_mode.lower()
-        mode_map = {
-            "tool_call": instructor.Mode.TOOLS,
-            "json": instructor.Mode.JSON,
-            "markdown_json": instructor.Mode.MD_JSON,
-        }
-        if mode_str in mode_map:
-            return mode_map[mode_str]
+def get_instructor_mode(user_settings: UserSettings) -> instructor.Mode:
+    """
+    Returns the user's configured mode.
+    The settings system handles the defaults/fallbacks at the DB/Env level.
+    """
+    mode_str = user_settings.instructor_mode.lower()
+    mode_map = {
+        "tool_call": instructor.Mode.TOOLS,
+        "tools": instructor.Mode.TOOLS,
+        "json": instructor.Mode.JSON,
+        "markdown_json": instructor.Mode.MD_JSON,
+        "md_json": instructor.Mode.MD_JSON,
+    }
+    if mode_str in mode_map:
+        return mode_map[mode_str]
 
-    # Fallback to auto-detection based on model name
-    model_lower = model.lower()
-    if any(
-        provider in model_lower for provider in ["gemini", "gpt-", "claude", "azure", "deepseek"]
-    ):
-        return instructor.Mode.TOOLS
-    return instructor.Mode.JSON  # Fallback for Ollama/Local models
+    # Safe fallback for invalid values
+    return instructor.Mode.JSON
 
 
 async def get_agent_decision(
     messages: list[dict],
-    response_model: type[Any],
+    response_model: type[Any] | list[type[Any]],
     trace_id: str | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
 ) -> tuple[Any, Any]:
     """
-    Sends the conversation history to the LLM and gets a structured decision.
+    Executes a structured LLM call and returns both the parsed object and raw metadata.
 
-    Uses Instructor to enforce that the LLM returns a response matching the provided
-    response_model (typically a Union of FinalResponse and tool input schemas).
-
-    This function wraps the Union in AgentTurn internally to fix the AttributeError
-    with instructor.create_with_completion, then unwraps it before returning.
-
-    Uses LiteLLM standard naming: 'provider/model' format (e.g., 'openai/gpt-4o' or 'ollama/llama3').
-
-    Instructor's max_retries handles validation errors automatically by retrying the LLM call
-    with the validation error fed back to the model.
+    This function handles the conversion of multiple tool schemas into a single Union
+    and uses Instructor's event system to capture LiteLLM completion metadata (like usage
+    and tool_call_ids) without triggering common library-level attribute errors.
 
     Args:
-        messages: List of message dicts with 'role' and 'content' keys.
-        response_model: Pydantic model or Union type that the LLM should return.
-        trace_id: Optional trace ID for logging and observability.
-        temperature: Optional temperature override (uses profile default if not provided).
-        max_tokens: Optional max_tokens override (uses profile default if not provided).
+        messages: Conversation history in OpenAI-style format.
+        response_model: A single Pydantic model or a list of models for the LLM to choose from.
+        trace_id: Optional UUID for cross-service log correlation.
+        temperature: LLM temperature (overrides profile default).
+        max_tokens: LLM token limit (overrides profile default).
 
     Returns:
-        Tuple of (parsed_object, raw_completion) where:
-        - parsed_object: Instance of response_model (FinalResponse or a tool input schema)
-        - raw_completion: Raw completion object from Instructor with tool_calls metadata
+        tuple[parsed_object, raw_completion]:
+            - parsed_object: The validated Pydantic instance selected by the LLM.
+            - raw_completion: The full LiteLLM ModelResponse object.
 
     Raises:
-        ValueError: If LLM_MODEL is not set or if response is empty/invalid.
-        Exception: Any LiteLLM or Instructor exceptions (will be mapped by orchestrator)
+        ValueError: For configuration or transport errors.
+        InstructorRetryException: On maximum validation failures.
     """
-    from typing import Union as TypingUnion
-    from typing import get_origin
+    from typing import Union
 
-    from app.agent.schemas import AgentTurn
     from app.core.config import default_profile, model_profiles
 
     if not user_settings.llm_model:
@@ -105,29 +102,23 @@ async def get_agent_decision(
     # Get profile for this model (or use default)
     profile = model_profiles.get(user_settings.llm_model, default_profile)
 
-    # Determine instructor mode dynamically per-call
-    instructor_mode = get_instructor_mode(user_settings.llm_model)
-
-    # Create client dynamically based on mode
+    # Use the User's preferred mode (mode-agnostic - works for all Instructor modes)
+    instructor_mode = get_instructor_mode(user_settings)
     client = instructor.from_litellm(acompletion, mode=instructor_mode)
 
-    # Wrap Union types in AgentTurn to fix AttributeError with instructor
-    # Check if response_model is a Union type
-    origin = get_origin(response_model)
-    needs_unwrap = False
-    if origin is not None and origin is TypingUnion:
-        # Wrap the Union in AgentTurn using create_model
-        from pydantic import create_model
-
-        wrapped_model = create_model(
-            "AgentTurnWrapper",
-            action=(response_model, ...),
-            __base__=AgentTurn,
-        )
-        actual_response_model = wrapped_model
-        needs_unwrap = True
+    # Convert list to direct Union (DO NOT use Iterable)
+    # In Mode.TOOLS, Union is treated as the toolset - model picks one, Instructor returns that single object
+    # Instructor automatically converts Union members to native function calling format
+    if isinstance(response_model, list):
+        if not response_model:
+            raise ValueError("response_model list cannot be empty")
+        elif len(response_model) == 1:
+            actual_response_model = response_model[0]
+        else:
+            # Programmatically create Union[ToolA, ToolB, FinalResponse]
+            # Use Union.__getitem__ for proper dynamic Union creation (Python 3.10+)
+            actual_response_model = Union.__getitem__(tuple(response_model))
     else:
-        # Not a Union, use as-is
         actual_response_model = response_model
 
     # Build kwargs: only pass what is explicitly provided
@@ -157,35 +148,59 @@ async def get_agent_decision(
     if user_settings.llm_base_url:
         kwargs["base_url"] = user_settings.llm_base_url
 
-    try:
-        # Use create_with_completion to preserve tool_calls metadata
-        parsed_object, raw_completion = await client.chat.completions.create_with_completion(
-            **kwargs
+    # Hook-based metadata capture (avoids AttributeError with Union types)
+    raw_completion = None
+
+    def capture_metadata(completion: Any) -> None:
+        """Hook: Captures the raw LiteLLM completion before Instructor parses it."""
+        nonlocal raw_completion
+        raw_completion = completion
+
+    # Register the hook to capture raw completion
+    # Hooks are required for metadata capture - fail fast if unavailable
+    if hasattr(client, "on"):
+        try:
+            client.on("completion:response", capture_metadata)
+        except (AttributeError, TypeError) as e:
+            raise ValueError(
+                "Instructor hooks not available: required for metadata capture. "
+                f"Client does not support 'on' method: {e}"
+            ) from e
+    elif hasattr(client.chat.completions, "on"):
+        try:
+            client.chat.completions.on("completion:response", capture_metadata)
+        except (AttributeError, TypeError) as e:
+            raise ValueError(
+                "Instructor hooks not available: required for metadata capture. "
+                f"Client.chat.completions does not support 'on' method: {e}"
+            ) from e
+    else:
+        raise ValueError(
+            "Instructor hooks not available: required for metadata capture. "
+            "Client does not support hook registration via 'on' method."
         )
 
-        # Validate response to prevent async hangs
-        if raw_completion is None:
-            raise ValueError("LLM returned empty response")
+    try:
+        # Use create() instead of create_with_completion() to avoid AttributeError
+        # The hook captures the raw completion metadata
+        parsed_output = await client.chat.completions.create(**kwargs)
 
-        if not hasattr(raw_completion, "choices") or not raw_completion.choices:
-            raise ValueError("LLM response has no choices")
+        # Unwrap in case JSON mode added a synthetic wrapper
+        parsed_object = unwrap_response(parsed_output)
 
-        if not raw_completion.choices[0].message:
-            raise ValueError("LLM response message is empty")
+        if parsed_object is None:
+            raise ValueError("LLM returned no valid objects")
 
-        # Unwrap AgentTurn if we wrapped it
-        if needs_unwrap:
-            if not isinstance(parsed_object, AgentTurn):
-                raise ValueError(
-                    f"Expected AgentTurn instance after wrapping Union type, "
-                    f"but got {type(parsed_object).__name__}. "
-                    f"This indicates a bug in the wrapping logic. (trace_id={trace_id})"
-                )
-            parsed_object = parsed_object.action
+        # Verify hook captured metadata (should always succeed if hook registration succeeded)
+        if raw_completion is None or not hasattr(raw_completion, "choices"):
+            raise ValueError(
+                "Transport Error: Hook did not capture raw completion metadata. "
+                "This indicates an Instructor internal error."
+            )
 
         return parsed_object, raw_completion
     except Exception as e:
-        # Log the raw error with full context
+        # Log the actual error for debugging
         logger.error(
             f"LLM call failed (trace_id={trace_id}): {type(e).__name__}: {e}",
             exc_info=True,
@@ -199,6 +214,15 @@ async def get_agent_decision(
         )
         # Re-raise to be handled by orchestrator's error mapping
         raise
+    finally:
+        # Always clean up hooks to prevent memory leaks in long-running servers
+        try:
+            if hasattr(client, "off"):
+                client.off("completion:response", capture_metadata)
+            elif hasattr(client.chat.completions, "off"):
+                client.chat.completions.off("completion:response", capture_metadata)
+        except (AttributeError, TypeError):
+            pass  # Hook cleanup not available, continue
 
 
 async def generate_dialogue(
@@ -281,3 +305,33 @@ async def generate_dialogue(
         )
         # Re-raise to be handled by orchestrator's error mapping
         raise
+
+
+def safe_get(obj: Any, attr: str, default: Any = None) -> Any:
+    """
+    Hardened retrieval for LiteLLM's hybrid response objects.
+
+    LiteLLM ModelResponse is a hybrid dict/object. Depending on the provider
+    (e.g. DeepSeek via OpenRouter), attribute access can fail where key access succeeds.
+    This function prioritizes key access for better compatibility with raw dict responses.
+
+    Args:
+        obj: The object to access (may be dict, object, or hybrid)
+        attr: The attribute/key name to retrieve
+        default: Default value if attribute/key not found
+
+    Returns:
+        The attribute value, dict value, or default
+    """
+    if obj is None:
+        return default
+
+    try:
+        # Prioritize key access for LiteLLM/OpenRouter responses
+        # Many providers return raw dicts that fail hasattr() but succeed with .get()
+        if isinstance(obj, dict):
+            return obj.get(attr, default)
+        # Fallback to attribute access for object-like responses
+        return getattr(obj, attr, default)
+    except Exception:
+        return default

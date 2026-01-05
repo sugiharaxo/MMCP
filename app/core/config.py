@@ -106,6 +106,10 @@ class UserSettings(BaseSettings):
         default=None,
         description="Base URL for LLM API (only needed for Ollama/LocalAI, e.g., 'http://localhost:11434')",
     )
+    instructor_mode: str = Field(
+        default="tool_call",
+        description="Instructor mode: 'tool_call' (native tool calling), 'json' (JSON output), or 'markdown_json' (MD+JSON output)",
+    )
 
     # Context Management (Character-based)
     # Defaulting to 100k chars (~50k tokens), which is safe for most models.
@@ -235,10 +239,6 @@ class ReasoningProfile(BaseModel):
 
     temperature: float = Field(default=0.0, description="Temperature for reasoning calls")
     max_tokens: int = Field(default=300, description="Maximum tokens for reasoning responses")
-    instructor_mode: str = Field(
-        default="tool_call",
-        description="Instructor mode: 'tool_call' (native tool calling), 'json' (JSON output), or 'md_json'",
-    )
 
 
 class DialogueProfile(BaseModel):

@@ -39,23 +39,40 @@ class HistoryManager:
             logger.debug(f"Trimmed context to {current_chars} chars.")
 
     def reconstruct_history(
-        self, base_history: list[dict[str, Any]], system_prompt: str, user_input: str | None = None
+        self,
+        base_history: list[dict[str, Any]],
+        system_prompt: str | tuple[str, str],
+        user_input: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Reconstruct conversation history for LLM consumption.
 
+        Supports both legacy single system prompt and new cache-safe two-message format.
+
         Args:
             base_history: The base conversation history
-            system_prompt: System prompt to prepend
+            system_prompt: System prompt(s) to prepend.
+                          Can be a single string (legacy) or tuple of (static, dynamic) strings.
             user_input: Optional user input to append
 
         Returns:
             Reconstructed history ready for LLM
         """
-        # PIN system at top, keep ALL other history
-        system_message = {"role": "system", "content": system_prompt}
-        messages = [m for m in base_history if m["role"] != "system"]
-        history = [system_message] + messages
+        # Handle cache-safe two-message format
+        if isinstance(system_prompt, tuple):
+            static_prompt, dynamic_prompt = system_prompt
+            # PIN static system message at top (Instructor will append schema here)
+            static_message = {"role": "system", "content": static_prompt}
+            # Add dynamic state as second system message
+            dynamic_message = {"role": "system", "content": dynamic_prompt}
+            # Remove all system messages from base history
+            messages = [m for m in base_history if m["role"] != "system"]
+            history = [static_message, dynamic_message] + messages
+        else:
+            # Legacy single system prompt format
+            system_message = {"role": "system", "content": system_prompt}
+            messages = [m for m in base_history if m["role"] != "system"]
+            history = [system_message] + messages
 
         # Add user input if provided
         if user_input and user_input.strip():
@@ -91,7 +108,7 @@ class HistoryManager:
             # Auto-detect mode if not provided
             from app.core.llm import get_instructor_mode
 
-            instructor_mode = get_instructor_mode(user_settings.llm_model)
+            instructor_mode = get_instructor_mode(user_settings)
 
         if instructor_mode == instructor.Mode.TOOLS:
             # Native tool calling format (OpenAI, Gemini, Claude, DeepSeek)
