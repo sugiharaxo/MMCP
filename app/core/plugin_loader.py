@@ -97,10 +97,9 @@ class PluginLoader:
             return
 
         # Create new model with injected discriminator field
-        # Using Literal ensures the LLM must use the exact tool name
-        # Construct Literal type dynamically using the tool_name value
-        # In Python 3.10+, Literal can be constructed with a runtime string
-        literal_annotation = Literal.__class_getitem__((tool_name,))  # type: ignore
+        # Use Literal for strict discriminated union routing - Pydantic uses this to select the correct tool
+        # The tool_name variable works correctly with Pydantic's create_model at runtime
+        literal_annotation = Literal[tool_name]
 
         patched_schema = create_model(
             tool_name,
