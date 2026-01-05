@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from app.api.base import ContextProvider, Plugin, Tool
 from app.api.schemas import PluginRuntime, PluginStatus
@@ -105,9 +105,11 @@ class PluginLoader:
             tool_name,
             tool_call_id=(
                 literal_annotation,
-                Field(default=tool_name, description=f"Tool identifier: {tool_name}"),
+                Field(description=f"Tool identifier: {tool_name}"),
             ),
             __base__=orig_schema,
+            # Pass config during creation to ensure JSON schema is built correctly
+            __config__=ConfigDict(title=tool_name),
         )
         # NOTE: If OpenAI's strict=True mode is enabled in the future, the default value
         # for tool_call_id might need to be removed (make it required instead).

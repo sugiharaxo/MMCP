@@ -249,9 +249,14 @@ class AgentOrchestrator:
                     context.set_available_tools(self.loader.list_tools())
 
                     tool_schema = tool.input_schema
-                    tool_call_data = tool_schema.model_construct(
-                        tool_call_id=tool_name, **tool_args
-                    )
+                    # Create clean payload by excluding any system keys that might have leaked
+                    payload = {
+                        k: v
+                        for k, v in tool_args.items()
+                        if k not in {"tool_call_id", "rationale", "type"}
+                    }
+
+                    tool_call_data = tool_schema.model_construct(tool_call_id=tool_name, **payload)
 
                     context.is_approved = True
                     result, _ = await self.react_loop.safe_tool_call(tool_call_data, context)

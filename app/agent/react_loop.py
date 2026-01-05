@@ -409,7 +409,8 @@ class ReActLoop:
                 approval_id=str(uuid.uuid4()),
                 explanation=sanitize_explanation(tool_call_data.rationale),
                 tool_name=tool_name,
-                tool_args=tool_call_data.model_dump(exclude={"tool_call_id"}),
+                # Be explicit: tool_args is ONLY the payload - exclude all system fields
+                tool_args=tool_call_data.model_dump(exclude={"tool_call_id", "rationale", "type"}),
                 tool_call_id=getattr(tool_call_data, "id", None),
             )
 

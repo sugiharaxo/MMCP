@@ -1,6 +1,7 @@
 """Tests for agent orchestrator."""
 
 from pathlib import Path
+from typing import Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -49,7 +50,7 @@ def mock_loader():
 class ToolInputSchema(MMCPToolAction):
     """Test tool input schema with flattened rationale."""
 
-    tool_call_id: str = Field(default="test_tool", description="Tool identifier")
+    tool_call_id: Literal["test_tool"] = Field(description="Tool identifier")
     param: str = Field(..., description="Test parameter")
 
 
