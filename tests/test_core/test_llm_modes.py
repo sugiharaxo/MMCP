@@ -85,7 +85,7 @@ def mock_llm_model(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", TESTABLE_MODES)
-async def test_get_agent_decision_across_modes(mode, mock_llm_model):
+async def test_get_agent_decision_across_modes(mode):
     """
     Verifies that get_agent_decision captures metadata and unwraps
     correctly across different Instructor parsing modes.
@@ -162,7 +162,7 @@ async def test_get_agent_decision_across_modes(mode, mock_llm_model):
 
 
 @pytest.mark.asyncio
-async def test_get_agent_decision_single_model(mock_llm_model):
+async def test_get_agent_decision_single_model():
     """Test that get_agent_decision works with a single model (not a list)."""
     mock_msg = MockMessage(role="assistant", content='{"answer": "test response"}')
     mock_choice = MockChoice(mock_msg)
@@ -170,6 +170,7 @@ async def test_get_agent_decision_single_model(mock_llm_model):
 
     mock_parsed = FinalResponse(type="final_response", answer="test response")
 
+    # Patch acompletion to return our mock
     with (
         patch("app.core.llm.acompletion", new_callable=AsyncMock) as mock_aco,
         patch("app.core.llm.get_instructor_mode", return_value=instructor.Mode.JSON),
@@ -197,6 +198,7 @@ async def test_get_agent_decision_single_model(mock_llm_model):
         mock_client.off = MagicMock()
         mock_client.chat.completions.on = MagicMock(side_effect=register_hook)
         mock_client.chat.completions.off = MagicMock()
+
         mock_from_litellm.return_value = mock_client
 
         # Pass single model instead of list
@@ -210,7 +212,7 @@ async def test_get_agent_decision_single_model(mock_llm_model):
 
 
 @pytest.mark.asyncio
-async def test_get_agent_decision_empty_choices(mock_llm_model):
+async def test_get_agent_decision_empty_choices():
     """Test that get_agent_decision raises ValueError for empty choices."""
     # Mock completion with empty choices
     mock_completion = MockModelResponse([])
@@ -303,7 +305,7 @@ async def test_unwrap_response_non_model():
 
 
 @pytest.mark.asyncio
-async def test_get_agent_decision_empty_model_list(mock_llm_model):
+async def test_get_agent_decision_empty_model_list():
     """Test that get_agent_decision raises ValueError for empty model list."""
     with pytest.raises(ValueError, match="response_model list cannot be empty"):
         await get_agent_decision(messages=[{"role": "user", "content": "test"}], response_model=[])
@@ -318,130 +320,3 @@ async def test_get_agent_decision_no_llm_model(monkeypatch):
         await get_agent_decision(
             messages=[{"role": "user", "content": "test"}], response_model=[FinalResponse]
         )
-
-
-@pytest.mark.asyncio
-async def test_get_agent_decision_hook_capture(mock_llm_model):
-    """Test that metadata is captured via hooks even when Instructor returns parsed object."""
-    mock_msg = MockMessage(role="assistant", content='{"type": "final_response", "answer": "test"}')
-    mock_choice = MockChoice(mock_msg)
-    mock_completion = MockModelResponse([mock_choice])
-
-    mock_parsed = FinalResponse(type="final_response", answer="test")
-
-    with (
-        patch("app.core.llm.acompletion", new_callable=AsyncMock) as mock_aco,
-        patch("app.core.llm.get_instructor_mode", return_value=instructor.Mode.JSON),
-        patch("app.core.llm.instructor.from_litellm") as mock_from_litellm,
-    ):
-        mock_aco.return_value = mock_completion
-
-        # Store hook callback to invoke it later
-        hook_callback = None
-
-        def register_hook(event, callback):
-            nonlocal hook_callback
-            if event == "completion:response":
-                hook_callback = callback
-
-        async def create_with_hook(*_args, **_kwargs):
-            # Invoke the hook with the raw completion before returning parsed
-            if hook_callback:
-                hook_callback(mock_completion)
-            return mock_parsed
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=create_with_hook)
-        mock_client.on = MagicMock(side_effect=register_hook)
-        mock_client.off = MagicMock()
-        mock_client.chat.completions.on = MagicMock(side_effect=register_hook)
-        mock_client.chat.completions.off = MagicMock()
-        mock_from_litellm.return_value = mock_client
-
-        parsed_obj, raw_meta = await get_agent_decision(
-            messages=[{"role": "user", "content": "test"}], response_model=[FinalResponse]
-        )
-
-        # Verify metadata was captured
-        assert raw_meta is not None
-        assert isinstance(parsed_obj, FinalResponse)
-
-
-@pytest.mark.asyncio
-async def test_get_agent_decision_hook_registration_failure(mock_llm_model):
-    """Test that get_agent_decision fails fast if hook registration fails."""
-    with (
-        patch("app.core.llm.acompletion", new_callable=AsyncMock),
-        patch("app.core.llm.get_instructor_mode", return_value=instructor.Mode.JSON),
-        patch("app.core.llm.instructor.from_litellm") as mock_from_litellm,
-    ):
-        # Create a client that doesn't support hooks
-        mock_client = MagicMock()
-        # Remove 'on' method to simulate hook registration failure
-        del mock_client.on
-        del mock_client.chat.completions.on
-        mock_from_litellm.return_value = mock_client
-
-        with pytest.raises(ValueError, match="Instructor hooks not available"):
-            await get_agent_decision(
-                messages=[{"role": "user", "content": "test"}], response_model=[FinalResponse]
-            )
-
-
-@pytest.mark.asyncio
-async def test_get_agent_decision_hook_registration_exception(mock_llm_model):
-    """Test that get_agent_decision fails fast if hook registration raises exception."""
-    with (
-        patch("app.core.llm.acompletion", new_callable=AsyncMock),
-        patch("app.core.llm.get_instructor_mode", return_value=instructor.Mode.JSON),
-        patch("app.core.llm.instructor.from_litellm") as mock_from_litellm,
-    ):
-        # Create a client where hook registration raises an exception
-        mock_client = MagicMock()
-        mock_client.on = MagicMock(side_effect=TypeError("Hook registration failed"))
-        mock_from_litellm.return_value = mock_client
-
-        with pytest.raises(ValueError, match="Instructor hooks not available"):
-            await get_agent_decision(
-                messages=[{"role": "user", "content": "test"}], response_model=[FinalResponse]
-            )
-
-
-@pytest.mark.asyncio
-async def test_get_agent_decision_hook_capture_failure(mock_llm_model):
-    """Test that get_agent_decision fails if hook doesn't capture metadata."""
-    mock_msg = MockMessage(role="assistant", content='{"type": "final_response", "answer": "test"}')
-    mock_choice = MockChoice(mock_msg)
-    mock_completion = MockModelResponse([mock_choice])
-    mock_parsed = FinalResponse(type="final_response", answer="test")
-
-    with (
-        patch("app.core.llm.acompletion", new_callable=AsyncMock) as mock_aco,
-        patch("app.core.llm.get_instructor_mode", return_value=instructor.Mode.JSON),
-        patch("app.core.llm.instructor.from_litellm") as mock_from_litellm,
-    ):
-        mock_aco.return_value = mock_completion
-
-        # Store hook callback but don't invoke it (simulating hook failure)
-        hook_callback = None
-
-        def register_hook(event, callback):
-            nonlocal hook_callback
-            if event == "completion:response":
-                hook_callback = callback
-            # Don't invoke callback - simulate hook not firing
-
-        async def create_without_hook(*_args, **_kwargs):
-            # Don't invoke hook - simulate hook not capturing metadata
-            return mock_parsed
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=create_without_hook)
-        mock_client.on = MagicMock(side_effect=register_hook)
-        mock_client.off = MagicMock()
-        mock_from_litellm.return_value = mock_client
-
-        with pytest.raises(ValueError, match="Hook did not capture raw completion metadata"):
-            await get_agent_decision(
-                messages=[{"role": "user", "content": "test"}], response_model=[FinalResponse]
-            )

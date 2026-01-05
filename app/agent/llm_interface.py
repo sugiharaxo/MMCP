@@ -24,12 +24,12 @@ class LLMInterface:
 
         Args:
             messages: Conversation messages
-            response_model: Pydantic model for structured output (typically Union[FinalResponse, ReasonedToolCall])
+            response_model: Pydantic model for structured output (typically Union[FinalResponse, flattened tool schemas])
             trace_id: Optional trace ID for logging
 
         Returns:
             Tuple of (parsed_object, raw_completion) where:
-            - parsed_object: Structured response instance (FinalResponse or ReasonedToolCall)
+            - parsed_object: Structured response instance (FinalResponse or flattened tool schema)
             - raw_completion: Raw completion object with tool_calls metadata
         """
         logger.info(

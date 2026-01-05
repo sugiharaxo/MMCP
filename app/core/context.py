@@ -4,6 +4,7 @@ import time
 from typing import Any
 
 from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 
 from app.core.config import user_settings
 from app.core.logger import logger
@@ -80,6 +81,9 @@ class MMCPContext(BaseModel):
     runtime: RuntimeContext
     metrics: ContextMetrics = Field(default_factory=ContextMetrics)
 
+    # Approval state for HITL workflow
+    is_approved: SkipJsonSchema[bool] = Field(default=False, exclude=True)
+
     def __init__(self, trace_id: str | None = None, **data):
         super().__init__(runtime=RuntimeContext(trace_id=trace_id), **data)
 
@@ -117,9 +121,7 @@ class MMCPContext(BaseModel):
         """Get failure count for a specific tool."""
         return self.runtime.tool_failure_counts.get(tool_name, 0)
 
-    def is_tool_circuit_breaker_tripped(
-        self, tool_name: str, threshold: int | None = None
-    ) -> bool:
+    def is_tool_circuit_breaker_tripped(self, tool_name: str, threshold: int | None = None) -> bool:
         """Check if circuit breaker should trip for a tool."""
         if threshold is None:
             threshold = user_settings.tool_circuit_breaker_threshold
