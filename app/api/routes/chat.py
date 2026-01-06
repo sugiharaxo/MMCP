@@ -10,7 +10,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.agent.schemas import ActionRequestResponse
 from app.core.errors import StaleApprovalError
 from app.services.agent import AgentService
 
@@ -71,27 +70,26 @@ async def chat_endpoint(
         )
 
         # Check if this is an ActionRequestResponse (HITL interruption)
-        if isinstance(response, ActionRequestResponse):
+        # process_message returns a dict, so check the "type" key instead of isinstance
+        if response.get("type") == "action_request":
             # This is an interruption - return as JSON
-            result = response.model_dump()
             logger.info(
-                f"Returning ActionRequestResponse: event_id={result.get('event_id')}, "
-                f"type={result.get('type')}"
+                f"Returning ActionRequestResponse: approval_id={response.get('approval_id')}, "
+                f"type={response.get('type')}"
             )
             # Use JSONResponse explicitly to ensure proper serialization
             return JSONResponse(
-                status_code=status.HTTP_200_OK, content=result, media_type="application/json"
+                status_code=status.HTTP_200_OK, content=response, media_type="application/json"
             )
 
-        # Regular string response - return as JSON with expected format
-        result = {"response": str(response), "type": "regular"}
+        # Regular response - return dict directly to preserve metadata (thought, session_id, etc.)
         logger.info(
-            f"Returning regular response: response length={len(str(response))}, "
-            f"session_id={chat_request.session_id}"
+            f"Returning regular response: type={response.get('type')}, "
+            f"session_id={response.get('session_id')}"
         )
-        # Use JSONResponse explicitly to ensure proper serialization
+        # FastAPI will serialize the dict to JSON automatically
         return JSONResponse(
-            status_code=status.HTTP_200_OK, content=result, media_type="application/json"
+            status_code=status.HTTP_200_OK, content=response, media_type="application/json"
         )
 
     except Exception as e:
@@ -115,12 +113,16 @@ async def respond_to_action(
             f"Action response received: session_id={action_response.session_id}, "
             f"approval_id={action_response.approval_id}, decision={action_response.decision}"
         )
-        was_approved = action_response.decision == Decision.APPROVE
-        # TODO: Implement resume_action in AgentService
-        response = f"Action {'approved' if was_approved else 'denied'} - not yet implemented in new architecture"
+        # Call resume_action in AgentService
+        response = await agent_service.resume_action(
+            session_id=action_response.session_id,
+            approval_id=action_response.approval_id,
+            decision=action_response.decision.value,
+        )
+        # Return the response dict directly to preserve metadata
         return JSONResponse(
             status_code=status.HTTP_200_OK,
-            content={"response": str(response), "type": "regular"},
+            content=response,
             media_type="application/json",
         )
     except StaleApprovalError as e:

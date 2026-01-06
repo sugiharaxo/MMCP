@@ -235,6 +235,45 @@ class AgentService:
             del self._sessions[session_id]
             logger.info(f"Cleared session {session_id}")
 
+    async def resume_action(
+        self,
+        session_id: str,
+        approval_id: str,
+        decision: str,
+    ) -> dict[str, Any]:
+        """
+        Resume processing after a HITL action approval/denial.
+
+        This is a dummy implementation that logs the decision and returns a success response.
+        In full implementation, this would resume the agent loop with the tool execution result.
+
+        Args:
+            session_id: Session identifier
+            approval_id: Approval identifier for the pending action
+            decision: "approve" or "deny"
+
+        Returns:
+            Response dict with success status and metadata
+        """
+        was_approved = decision.lower() == "approve"
+
+        logger.info(
+            f"Resuming action for session {session_id}: approval_id={approval_id}, "
+            f"decision={decision}"
+        )
+
+        # Dummy implementation: just log and return success
+        # In full implementation, this would:
+        # 1. Look up the pending action by approval_id
+        # 2. If approved: execute the tool and continue the loop
+        # 3. If denied: return a denial message and continue
+        return {
+            "response": f"Action {'approved' if was_approved else 'denied'} successfully",
+            "type": "final_response",
+            "session_id": session_id,
+            "thought": f"User {'approved' if was_approved else 'denied'} the action with approval_id {approval_id}",
+        }
+
     async def close(self) -> None:
         """Clean up all resources."""
         # Close transport and intelligence if they have close methods
