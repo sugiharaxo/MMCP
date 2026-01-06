@@ -10,9 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.agent.orchestrator import AgentOrchestrator
-from app.agent.schemas import ActionRequestResponse
 from app.core.errors import StaleApprovalError
+from app.services.agent import AgentService
 
 
 class ChatRequest(BaseModel):
@@ -40,14 +39,14 @@ class ActionResponse(BaseModel):
 router = APIRouter(prefix="/api/v1", tags=["chat"])
 
 
-def get_orchestrator(request: Request) -> AgentOrchestrator:
-    """Dependency to get AgentOrchestrator instance from app state."""
-    return request.app.state.orchestrator
+def get_agent_service(request: Request) -> AgentService:
+    """Dependency to get AgentService instance from app state."""
+    return request.app.state.agent_service
 
 
 @router.post("/chat")
 async def chat_endpoint(
-    chat_request: ChatRequest, orchestrator: AgentOrchestrator = Depends(get_orchestrator)
+    chat_request: ChatRequest, agent_service: AgentService = Depends(get_agent_service)
 ):
     """
     Main chat endpoint for AG-UI.
@@ -61,35 +60,36 @@ async def chat_endpoint(
     from app.core.logger import logger
 
     try:
-        # Use the orchestrator instance from app state
+        # Use the agent service instance from app state
         logger.info(
             f"Chat request received: message='{chat_request.message[:50]}...', "
             f"session_id={chat_request.session_id}"
         )
-        response = await orchestrator.chat(chat_request.message, chat_request.session_id)
+        response = await agent_service.process_message(
+            chat_request.message, chat_request.session_id
+        )
 
         # Check if this is an ActionRequestResponse (HITL interruption)
-        if isinstance(response, ActionRequestResponse):
+        # process_message returns a dict, so check the "type" key instead of isinstance
+        if response.get("type") == "action_request":
             # This is an interruption - return as JSON
-            result = response.model_dump()
             logger.info(
-                f"Returning ActionRequestResponse: event_id={result.get('event_id')}, "
-                f"type={result.get('type')}"
+                f"Returning ActionRequestResponse: approval_id={response.get('approval_id')}, "
+                f"type={response.get('type')}"
             )
             # Use JSONResponse explicitly to ensure proper serialization
             return JSONResponse(
-                status_code=status.HTTP_200_OK, content=result, media_type="application/json"
+                status_code=status.HTTP_200_OK, content=response, media_type="application/json"
             )
 
-        # Regular string response - return as JSON with expected format
-        result = {"response": str(response), "type": "regular"}
+        # Regular response - return dict directly to preserve metadata (thought, session_id, etc.)
         logger.info(
-            f"Returning regular response: response length={len(str(response))}, "
-            f"session_id={chat_request.session_id}"
+            f"Returning regular response: type={response.get('type')}, "
+            f"session_id={response.get('session_id')}"
         )
-        # Use JSONResponse explicitly to ensure proper serialization
+        # FastAPI will serialize the dict to JSON automatically
         return JSONResponse(
-            status_code=status.HTTP_200_OK, content=result, media_type="application/json"
+            status_code=status.HTTP_200_OK, content=response, media_type="application/json"
         )
 
     except Exception as e:
@@ -99,7 +99,7 @@ async def chat_endpoint(
 
 @router.post("/chat/respond")
 async def respond_to_action(
-    action_response: ActionResponse, orchestrator: AgentOrchestrator = Depends(get_orchestrator)
+    action_response: ActionResponse, agent_service: AgentService = Depends(get_agent_service)
 ):
     """
     Respond to a pending external tool action in chat.
@@ -113,13 +113,16 @@ async def respond_to_action(
             f"Action response received: session_id={action_response.session_id}, "
             f"approval_id={action_response.approval_id}, decision={action_response.decision}"
         )
-        was_approved = action_response.decision == Decision.APPROVE
-        response = await orchestrator.resume_action(
-            action_response.approval_id, action_response.session_id, was_approved=was_approved
+        # Call resume_action in AgentService
+        response = await agent_service.resume_action(
+            session_id=action_response.session_id,
+            approval_id=action_response.approval_id,
+            decision=action_response.decision.value,
         )
+        # Return the response dict directly to preserve metadata
         return JSONResponse(
             status_code=status.HTTP_200_OK,
-            content={"response": str(response), "type": "regular"},
+            content=response,
             media_type="application/json",
         )
     except StaleApprovalError as e:

@@ -8,7 +8,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.agent.orchestrator import AgentOrchestrator
 from app.anp.event_bus import EventBus
 from app.anp.notification_dispatcher import NotificationDispatcher
 from app.anp.watchdog import WatchdogService
@@ -32,6 +31,7 @@ from app.core.health import HealthMonitor
 from app.core.logger import logger
 from app.core.plugin_loader import PluginLoader
 from app.core.session_manager import SessionManager
+from app.services.agent import AgentService
 
 BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
@@ -40,7 +40,7 @@ STATIC_DIR.mkdir(exist_ok=True)
 
 loader = PluginLoader(user_settings.plugin_dir)
 health_monitor = HealthMonitor()
-orchestrator = AgentOrchestrator(loader, health_monitor)
+agent_service = AgentService(loader)
 event_bus = EventBus()
 notification_dispatcher = NotificationDispatcher()
 watchdog_service = WatchdogService(event_bus)
@@ -66,7 +66,7 @@ async def lifespan(_app: FastAPI):
     # Attach components to app state for dependency injection
     _app.state.loader = loader
     _app.state.health_monitor = health_monitor
-    _app.state.orchestrator = orchestrator
+    _app.state.agent_service = agent_service
     _app.state.event_bus = event_bus
     _app.state.notification_dispatcher = notification_dispatcher
     _app.state.session_manager = session_manager

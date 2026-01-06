@@ -19,7 +19,6 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from sqlalchemy import and_, select
 
-from app.agent.orchestrator import AgentOrchestrator
 from app.anp.event_bus import EventBus
 from app.anp.models import EventLedger, EventStatus
 from app.anp.notification_dispatcher import NotificationDispatcher
@@ -45,11 +44,6 @@ def get_plugin_loader(request: Request) -> PluginLoader:
 def get_health_monitor(request: Request) -> HealthMonitor:
     """Dependency to get HealthMonitor instance from app state."""
     return request.app.state.health_monitor
-
-
-def get_orchestrator(request: Request) -> AgentOrchestrator:
-    """Dependency to get AgentOrchestrator instance from app state."""
-    return request.app.state.orchestrator
 
 
 @router.post("/sessions", response_model=SessionResponse)
