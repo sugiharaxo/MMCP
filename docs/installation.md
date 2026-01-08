@@ -4,7 +4,12 @@
 
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/)
 2. Clone this repository using git or [download](https://github.com/sugiharaxo/MMCP/archive/refs/heads/main.zip) and extract the zip to your desired location
-3. Open a terminal inside that folder, and run `uv run main.py`
+3. **Generate BAML client code** (required before first run):
+   ```bash
+   baml-cli generate
+   ```
+   This creates the `baml_client/` folder needed for the Prompt layer. Without this, imports will fail.
+4. Open a terminal inside that folder, and run `uv run main.py`
 
 To interact with MMCP, find the IP of your server and go to `http://YOUR_IP:8000`
 
@@ -19,6 +24,7 @@ To interact with MMCP, find the IP of your server and go to `http://YOUR_IP:8000
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
+baml-cli generate
 python main.py
 ```
 
@@ -28,6 +34,7 @@ python main.py
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+baml-cli generate
 python3 main.py
 ```
 
