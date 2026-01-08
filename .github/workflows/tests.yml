@@ -31,7 +31,7 @@ jobs:
 
       - name: Generate BAML client
         run: |
-          uv run baml-cli generate
+          baml-cli generate
 
       - name: Run Pytest
         run: pytest
