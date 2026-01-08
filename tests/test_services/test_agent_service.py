@@ -9,6 +9,8 @@ is functional. It verifies the complete flow:
 This is the "Proof of Life" test that shows the new architecture is operational.
 """
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from app.services.agent import AgentService
@@ -41,70 +43,85 @@ async def test_agent_service_process_message_dummy_flow(loader):
     Even though this uses dummy implementations, it proves the architecture
     is correctly wired and the interfaces are compatible.
     """
-    agent_service = AgentService(plugin_loader=loader)
+    from baml_client.types import FinalResponse
 
-    # Process a test message
-    result = await agent_service.process_message(
-        user_input="Hello, test message",
-        session_id=None,
-        system_prompt="You are a helpful assistant.",
-    )
+    mock_response = FinalResponse(thought="Test thought", answer="Test response")
 
-    # Verify we got a response
-    assert result is not None
-    assert isinstance(result, dict)
-    assert "response" in result
-    assert "type" in result
-    assert "session_id" in result
+    with patch("baml_client.b") as mock_baml:
+        mock_baml.UniversalAgent = AsyncMock(return_value=mock_response)
 
-    # The dummy flow should return a FinalResponse (parsed from "DUMMY_LLM_RESPONSE")
-    # The PromptService fallback will parse it as FinalResponse with the raw text
-    assert result["type"] in ["final_response", "error"]  # Could be either depending on parsing
+        agent_service = AgentService(plugin_loader=loader)
 
-    # Verify session was created
-    assert result["session_id"] is not None
-    assert len(result["session_id"]) > 0
+        # Process a test message
+        result = await agent_service.process_message(
+            user_input="Hello, test message",
+            session_id=None,
+            system_prompt="You are a helpful assistant.",
+        )
 
-    # Cleanup
-    await agent_service.close()
+        # Verify we got a response
+        assert result is not None
+        assert isinstance(result, dict)
+        assert "response" in result
+        assert "type" in result
+        assert "session_id" in result
+
+        # The mocked flow should return a FinalResponse
+        assert result["type"] == "final_response"
+        assert result["response"] == "Test response"
+
+        # Verify session was created
+        assert result["session_id"] is not None
+        assert len(result["session_id"]) > 0
+
+        # Cleanup
+        await agent_service.close()
 
 
 @pytest.mark.asyncio
 async def test_agent_service_session_management(loader):
     """Test that AgentService manages sessions correctly."""
-    agent_service = AgentService(plugin_loader=loader)
+    from baml_client.types import FinalResponse
 
-    # Process first message (creates session)
-    result1 = await agent_service.process_message(
-        user_input="First message",
-        session_id=None,
-    )
+    # Mock the BAML call to return a dummy FinalResponse
+    mock_response = FinalResponse(thought="Test thought", answer="Test response")
 
-    session_id = result1["session_id"]
-    assert session_id is not None
+    with patch("baml_client.b") as mock_baml:
+        mock_baml.UniversalAgent = AsyncMock(return_value=mock_response)
 
-    # Process second message with same session
-    result2 = await agent_service.process_message(
-        user_input="Second message",
-        session_id=session_id,
-    )
+        agent_service = AgentService(plugin_loader=loader)
 
-    # Should use same session
-    assert result2["session_id"] == session_id
+        # Process first message (creates session)
+        result1 = await agent_service.process_message(
+            user_input="First message",
+            session_id=None,
+        )
 
-    # Get session history directly from session_manager (not through thin wrapper)
-    history = await agent_service.session_manager.load_session(session_id)
-    assert history is not None
-    assert isinstance(history, list)
-    # History should contain messages from both interactions
-    assert len(history) > 0
+        session_id = result1["session_id"]
+        assert session_id is not None
 
-    # Clear session by saving empty history
-    await agent_service.session_manager.save_session(session_id, [])
+        # Process second message with same session
+        result2 = await agent_service.process_message(
+            user_input="Second message",
+            session_id=session_id,
+        )
 
-    # Verify session is cleared
-    history_after_clear = await agent_service.session_manager.load_session(session_id)
-    assert history_after_clear == []
+        # Should use same session
+        assert result2["session_id"] == session_id
 
-    # Cleanup
-    await agent_service.close()
+        # Get session history directly from session_manager (not through thin wrapper)
+        history = await agent_service.session_manager.load_session(session_id)
+        assert history is not None
+        assert isinstance(history, list)
+        # History should contain messages from both interactions
+        assert len(history) > 0
+
+        # Clear session by saving empty history
+        await agent_service.session_manager.save_session(session_id, [])
+
+        # Verify session is cleared
+        history_after_clear = await agent_service.session_manager.load_session(session_id)
+        assert history_after_clear == []
+
+        # Cleanup
+        await agent_service.close()
