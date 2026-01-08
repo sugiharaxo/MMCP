@@ -37,10 +37,8 @@ BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
 STATIC_DIR.mkdir(exist_ok=True)
 
-
 loader = PluginLoader(user_settings.plugin_dir)
 health_monitor = HealthMonitor()
-agent_service = AgentService(loader)
 event_bus = EventBus()
 notification_dispatcher = NotificationDispatcher()
 watchdog_service = WatchdogService(event_bus)
@@ -48,6 +46,18 @@ session_manager = SessionManager()
 event_bus.set_session_manager(session_manager)
 notification_dispatcher.set_event_bus(event_bus)
 event_bus.set_notification_dispatcher(notification_dispatcher)
+
+# Create AgentNotificationInjector for context assembly
+from app.anp.agent_integration import AgentNotificationInjector
+
+notification_injector = AgentNotificationInjector(event_bus)
+
+# Initialize AgentService with all dependencies
+agent_service = AgentService(
+    plugin_loader=loader,
+    health_monitor=health_monitor,
+    notification_injector=notification_injector,
+)
 
 
 @asynccontextmanager

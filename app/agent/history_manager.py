@@ -2,8 +2,6 @@
 
 from typing import Any
 
-import instructor
-
 from app.core.config import user_settings
 from app.core.logger import logger
 
@@ -24,8 +22,12 @@ class HistoryManager:
 
         while True:
             # Calculate total character count of the history
-            # Handle None content (tool calls have content: None)
-            current_chars = sum(len(m.get("content") or "") for m in history)
+            # Handle dict content (tool calls and final responses have dict content)
+            # Handle string content (user messages and tool results have string content)
+            current_chars = sum(
+                len(str(m.get("content") or "")) if isinstance(m.get("content"), (str, dict)) else 0
+                for m in history
+            )
 
             # If we are under the limit or only have system prompt left, stop
             if current_chars <= user_settings.llm_max_context_chars or len(history) <= 2:
@@ -38,89 +40,82 @@ class HistoryManager:
             current_chars = sum(len(m.get("content") or "") for m in history)
             logger.debug(f"Trimmed context to {current_chars} chars.")
 
-    def reconstruct_history(
-        self,
-        base_history: list[dict[str, Any]],
-        system_prompt: str | tuple[str, str],
-        user_input: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """
-        Reconstruct conversation history for LLM consumption.
+    def add_user_message(self, history: list[dict[str, Any]], content: str) -> None:
+        """Add user message to history."""
+        history.append({"role": "user", "content": content})
 
-        Supports both legacy single system prompt and new cache-safe two-message format.
+    def add_final_response(
+        self,
+        history: list[dict[str, Any]],
+        final_response: dict[str, Any],
+    ) -> None:
+        """
+        Add FinalResponse JSON object to history.
+
+        Stores the full JSON object (thought + answer) so the model sees exactly
+        what it outputted previously.
 
         Args:
-            base_history: The base conversation history
-            system_prompt: System prompt(s) to prepend.
-                          Can be a single string (legacy) or tuple of (static, dynamic) strings.
-            user_input: Optional user input to append
-
-        Returns:
-            Reconstructed history ready for LLM
+            history: History list to append to
+            final_response: Full FinalResponse dict with 'thought' and 'answer' keys
         """
-        # Handle cache-safe two-message format
-        if isinstance(system_prompt, tuple):
-            static_prompt, dynamic_prompt = system_prompt
-            # PIN static system message at top (Instructor will append schema here)
-            static_message = {"role": "system", "content": static_prompt}
-            # Add dynamic state as second system message
-            dynamic_message = {"role": "system", "content": dynamic_prompt}
-            # Remove all system messages from base history
-            messages = [m for m in base_history if m["role"] != "system"]
-            history = [static_message, dynamic_message] + messages
-        else:
-            # Legacy single system prompt format
-            system_message = {"role": "system", "content": system_prompt}
-            messages = [m for m in base_history if m["role"] != "system"]
-            history = [system_message] + messages
+        history.append(
+            {
+                "role": "assistant",
+                "type": "final_response",
+                "content": final_response,  # Full JSON dict, not stringified
+            }
+        )
 
-        # Add user input if provided
-        if user_input and user_input.strip():
-            history.append({"role": "user", "content": user_input})
+    def add_tool_call(
+        self,
+        history: list[dict[str, Any]],
+        tool_call: dict[str, Any],
+    ) -> None:
+        """
+        Add ToolCall JSON object to history.
 
-        return history
+        Stores the full JSON object (thought + tool_name + args) so the model sees
+        exactly what it outputted previously.
 
-    def add_assistant_response(self, history: list[dict[str, Any]], content: str) -> None:
-        """Add assistant response to history."""
-        history.append({"role": "assistant", "content": content})
+        Args:
+            history: History list to append to
+            tool_call: Full ToolCall dict with 'thought', 'tool_name', and 'args' keys
+        """
+        history.append(
+            {
+                "role": "assistant",
+                "type": "tool_call",
+                "content": tool_call,  # Full JSON dict, not stringified
+            }
+        )
 
     def add_tool_result(
         self,
         history: list[dict[str, Any]],
-        tool_call_id: str | None,
+        tool_name: str,
         result: str,
-        instructor_mode: instructor.Mode | None = None,
     ) -> None:
         """
         Add tool execution result to history.
 
-        Mode-aware routing:
-        - Mode.TOOLS: Uses role="tool" with tool_call_id (native tool calling format)
-        - Mode.JSON: Uses role="user" with OBSERVATION prefix (for local models that don't support tool role)
+        Stores the raw result JSON string in content, which will be formatted
+        by BAML template as an observation tag: <observation tool="tool_name">{result}</observation>
 
         Args:
             history: History list to append to
-            tool_call_id: Tool call identifier (may be generated UUID for JSON mode)
-            result: Tool execution result
-            instructor_mode: Instructor mode to determine message format
+            tool_name: Name of the tool that was executed
+            result: Tool execution result (already converted to JSON string)
         """
-        if instructor_mode is None:
-            # Auto-detect mode if not provided
-            from app.core.llm import get_instructor_mode
-
-            instructor_mode = get_instructor_mode(user_settings)
-
-        if instructor_mode == instructor.Mode.TOOLS:
-            # Native tool calling format (OpenAI, Gemini, Claude, DeepSeek)
-            history.append({"role": "tool", "tool_call_id": tool_call_id, "content": str(result)})
-        else:
-            # JSON mode (Ollama/local models) - use user role with prefix
-            history.append(
-                {
-                    "role": "user",
-                    "content": f"OBSERVATION: {str(result)}",
-                }
-            )
+        # Store raw result JSON - BAML template will format as observation tag
+        history.append(
+            {
+                "role": "user",  # Universal role for compatibility
+                "content": result,  # Raw JSON result string
+                "tool_result": True,  # Metadata for BAML to detect and format as observation
+                "tool_name": tool_name,  # Tool name for observation tag
+            }
+        )
 
     def add_error_message(self, history: list[dict[str, Any]], error_message: str) -> None:
         """Add error message to history for LLM correction."""
@@ -130,51 +125,3 @@ class HistoryManager:
                 "content": f"Error: {error_message} Please provide a valid response.",
             }
         )
-
-    def add_llm_message(
-        self,
-        history: list[dict[str, Any]],
-        completion_message: Any,
-        instructor_mode: instructor.Mode,
-    ) -> None:
-        """
-        Add LLM completion message to history, handling mode-specific formatting.
-
-        Converts raw completion message to history dict format, preserving
-        tool_calls metadata for Mode.TOOLS compatibility.
-
-        Args:
-            history: History list to append to
-            completion_message: Message object from LLM completion
-            instructor_mode: Instructor mode to determine message format
-        """
-        # If using Mode.TOOLS, preserve tool_calls structure
-        if (
-            instructor_mode == instructor.Mode.TOOLS
-            and hasattr(completion_message, "tool_calls")
-            and completion_message.tool_calls
-        ):
-            # DeepSeek requires content to be explicitly None (not missing) for tool_calls
-            assistant_dict = {
-                "role": "assistant",
-                "content": None,  # Explicitly set to None for DeepSeek compatibility
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": tc.type,
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in completion_message.tool_calls
-                ],
-            }
-        else:
-            # Regular assistant message with content
-            assistant_dict = {
-                "role": "assistant",
-                "content": completion_message.content or "",  # Ensure string, not None
-            }
-
-        history.append(assistant_dict)

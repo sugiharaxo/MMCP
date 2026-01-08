@@ -62,6 +62,29 @@ class SessionManager:
                 logger.debug(f"Initialized new session {session_id}")
                 return []
 
+    async def load_pending_action(self, session_id: str) -> dict[str, Any] | None:
+        """
+        Load pending action from database for HITL resumption.
+
+        Args:
+            session_id: Session ID to load
+
+        Returns:
+            Pending action dictionary or None if not found
+        """
+        async with get_session() as session:
+            stmt = select(ChatSession).where(ChatSession.id == session_id)
+            result = await session.execute(stmt)
+            chat_session = result.scalar_one_or_none()
+
+            if chat_session and chat_session.pending_action:
+                logger.debug(
+                    f"Loaded pending action for session {session_id}: "
+                    f"{chat_session.pending_action.get('approval_id')}"
+                )
+                return chat_session.pending_action.copy()
+            return None
+
     async def save_session(self, session_id: str, history: list[dict[str, Any]]) -> None:
         """
         Save conversation history to database.

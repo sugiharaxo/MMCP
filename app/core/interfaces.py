@@ -1,43 +1,18 @@
-"""Protocol-Driven Interfaces: Architectural contracts for the three-layer system.
+"""Protocol-Driven Interfaces: Architectural contracts for the two-layer system.
 
-This module defines the formal contracts between Transport, Intelligence, and Orchestrator
-layers using Python's typing.Protocol. These are purely conceptual interfaces that enforce
-the "Rules of the House" without dictating implementation details.
+This module defines the formal contracts between Prompt and Orchestrator
+layers using Python's typing.Protocol. Transport is now handled by BAML end-to-end.
+These are purely conceptual interfaces that enforce the "Rules of the House"
+without dictating implementation details.
 """
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel
 
 
-class LLMTransport(Protocol):
-    """Transport Layer Protocol: Pure I/O wrapper for LLM communication.
-
-    Contract:
-        - Must accept a prompt (string) and return a response (string)
-        - Zero knowledge of schemas, tools, or parsing logic
-        - Stateless: no internal state that affects behavior
-
-    This protocol ensures the transport layer remains a "dumb pipe" that only
-    handles network I/O and API communication.
-    """
-
-    async def send_message(self, prompt: str, **kwargs) -> str:
-        """
-        Send a raw text prompt and receive a raw text response.
-
-        Args:
-            prompt: Raw text prompt to send to the LLM
-            **kwargs: Additional parameters (temperature, max_tokens, etc.)
-
-        Returns:
-            Raw text response from the LLM
-        """
-        ...
-
-
-class LLMIntelligence(Protocol):
-    """Intelligence Layer Protocol: Prompt compilation and response parsing.
+class LLMPrompt(Protocol):
+    """Prompt service implementing LLMPrompt protocol.
 
     Contract 1 (Compile):
         - Take user input and dynamic tool metadata
@@ -51,7 +26,7 @@ class LLMIntelligence(Protocol):
         - Zero knowledge of networking or API keys
         - Stateless: compilation and parsing are pure functions
 
-    This protocol ensures the intelligence layer handles all schema-aware
+    This protocol ensures the prompt layer handles all schema-aware
     operations without touching network code.
     """
 
@@ -60,17 +35,19 @@ class LLMIntelligence(Protocol):
         tool_schemas: list[type[BaseModel]],
         system_prompt: str,
         user_input: str,
-    ) -> str:
+        history: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         """
-        Compile tool schemas and user input into a formatted prompt.
+        Compile tool schemas and user input into a formatted messages array.
 
         Args:
             tool_schemas: List of Pydantic models representing available tools
             system_prompt: Base system prompt template
             user_input: User's current message
+            history: Optional conversation history
 
         Returns:
-            Compiled prompt string ready for transport layer
+            List of message dicts in OpenAI format ready for transport layer
         """
         ...
 
@@ -95,30 +72,30 @@ class AgentOrchestrator(Protocol):
     """Orchestrator Protocol: Coordinates the ReAct loop between layers.
 
     Contract:
-        - Coordinate the loop between Transport and Intelligence
+        - Coordinate the loop between Transport and Prompt
         - Manage the single-turn or multi-turn ReAct pattern
         - Resolve user requests by routing tool calls and final answers
 
     This protocol ensures the orchestrator remains focused on coordination
-    logic without implementing transport or intelligence details.
+    logic without implementing transport or prompt details.
     """
 
     async def process_message(
         self,
         user_input: str,
         session_id: str | None = None,
-        system_prompt: str = "You are a helpful AI assistant.",
+        turn_instructions: str | None = None,
         **kwargs,
     ) -> dict:
         """
         Process a user message through the agent loop.
 
-        This coordinates: intelligence.compile -> transport.send -> intelligence.parse
+        This coordinates: prompt.compile -> transport.send -> prompt.parse
 
         Args:
             user_input: The user's message
             session_id: Optional session identifier
-            system_prompt: System prompt template
+            turn_instructions: Optional temporary instructions for this specific turn
             **kwargs: Additional parameters for transport layer
 
         Returns:

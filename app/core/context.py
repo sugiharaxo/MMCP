@@ -14,13 +14,11 @@ class LLMContext(BaseModel):
     """
     Information the LLM uses to make decisions.
 
-    This should only contain user-relevant data, conversation state,
-    and tool availability. Internal metrics are excluded to prevent
-    hallucinations or the LLM trying to manage its own execution.
+    This should only contain context provider data and tool availability.
+    Internal metrics are excluded to prevent context pollution.
     """
 
-    user_preferences: dict[str, Any] = Field(default_factory=dict)
-    media_state: dict[str, Any] = Field(default_factory=dict)
+    context_provider_data: dict[str, Any] = Field(default_factory=dict)
     available_tools: dict[str, str] = Field(default_factory=dict)  # name -> description
 
 
@@ -87,14 +85,14 @@ class MMCPContext(BaseModel):
     def __init__(self, trace_id: str | None = None, **data):
         super().__init__(runtime=RuntimeContext(trace_id=trace_id), **data)
 
-    def get_llm_payload(self) -> dict[str, Any]:
+    def get_context_provider_data(self) -> dict[str, Any]:
         """
-        Returns only the context data that should be visible to the LLM.
+        Returns context provider data that should be visible to the LLM.
 
-        This prevents sending internal metrics that could cause hallucinations
-        or confuse the LLM about its role vs. the system's role.
+        This excludes available_tools (already output in TOOLS section) to prevent
+        token waste and confusion. Only includes context_provider_data from context providers.
         """
-        return self.llm.model_dump()
+        return self.llm.context_provider_data
 
     def increment_tool_failures(self, tool_name: str) -> int:
         """Increment failure count for a tool and return new count."""

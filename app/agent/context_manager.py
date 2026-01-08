@@ -77,7 +77,7 @@ class ContextManager:
             )
             return
 
-        # Update LLM media state with successful results
+        # Update LLM context provider data with successful results
         # Note: _safe_execute_provider wraps all exceptions, so results will be tuples, not Exceptions
         for result in results:
             # Defensive check (shouldn't happen, but safe programming)
@@ -87,8 +87,8 @@ class ContextManager:
 
             provider_key, data = result
             if data is not None:
-                context.llm.media_state[provider_key] = data
-                logger.debug(f"Updated media_state with data from '{provider_key}'")
+                context.llm.context_provider_data[provider_key] = data
+                logger.debug(f"Updated context_provider_data with data from '{provider_key}'")
             else:
                 logger.debug(f"Provider '{provider_key}' returned no data (skipped or failed)")
 
@@ -166,95 +166,5 @@ class ContextManager:
             )
             return provider_key, None
 
-    async def get_static_instructions(self) -> str:
-        """
-        Generate static system instructions that never change during a session.
 
-        This includes identity, global rules, and system configuration.
-        Instructor will automatically append the tool schema to this message,
-        making it cache-safe for KV cache optimization.
 
-        Returns:
-            Static prompt string that remains constant throughout the session.
-        """
-        host_os = platform.system()
-        return f"""You are MMCP (Modular Media Control Plane), an intelligent media assistant.
-You help users manage their media library, search for metadata, and handle downloads.
-
-IDENTITY:
-- Be concise and helpful.
-- Use tools to fetch data before making recommendations.
-- If a tool fails, explain why to the user and try a different approach.
-
-SYSTEM:
-- OS: {host_os}
-- Use tools when you need specific information or actions.
-- When you have enough information to answer the user, provide a FinalResponse with your answer.
-
-(Instructor will append the available tool schemas here automatically.)"""
-
-    async def get_dynamic_state(self, context: MMCPContext | None = None) -> str:
-        """
-        Generate dynamic state that changes every turn.
-
-        This includes current time, media state, notifications, and standby alerts.
-        This content is sent as a separate system message to allow KV cache
-        persistence of the static instructions.
-
-        Args:
-            context: MMCPContext with current state
-
-        Returns:
-            Dynamic state string that changes each turn.
-        """
-        from datetime import datetime, timezone
-
-        # Get current time
-        current_time = datetime.now(timezone.utc).isoformat()
-
-        # Get the sanitized LLM payload for context-aware prompts
-        state_parts = [f"TIME: {current_time}"]
-
-        if context:
-            state = context.get_llm_payload()
-            if state.get("user_preferences"):
-                state_parts.append(f"User Preferences: {state['user_preferences']}")
-            if state.get("media_state"):
-                state_parts.append(f"Media State: {state['media_state']}")
-
-        # Add standby alerts for system awareness
-        standby_alerts = self._get_standby_alerts()
-        if standby_alerts:
-            state_parts.append(standby_alerts)
-
-        # Inject notifications (pending + recent user ACKs)
-        user_id = "default"  # Single-user system for now
-        pending = await self.notification_injector.get_pending_notifications(user_id)
-        recent_acks = await self.notification_injector.get_recent_user_acks(user_id)
-        notification_section = self.notification_injector.format_for_system_prompt(
-            pending, recent_acks
-        )
-        if notification_section:
-            state_parts.append(notification_section)
-
-        return "\n".join(state_parts)
-
-    def _get_standby_alerts(self) -> str:
-        """
-        Generate standby alerts for system awareness.
-
-        Only reports plugins that FAILED to load, providing the 'Proprioception'.
-        This keeps the context lean while enabling self-resolution.
-        """
-        standby = self.loader.standby_tools
-        if not standby:
-            return ""
-
-        alerts = ["DISABLED CAPABILITIES (SYSTEM ERRORS):"]
-        for name, tool in standby.items():
-            # Get plugin name for error lookup (settings are stored at plugin level)
-            plugin_name = tool.plugin_name
-            reason = self.loader._plugin_config_errors.get(plugin_name, "Unknown system error")
-            alerts.append(f"- {name}: {reason}")
-
-        return "\n".join(alerts)

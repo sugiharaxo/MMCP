@@ -20,7 +20,7 @@ class ContextResponse(BaseModel):
     Handles TTL and metadata internally while keeping the LLM's data clean.
     """
 
-    data: dict[str, Any] = Field(description="The context data to inject into LLM media_state")
+    data: dict[str, Any] = Field(description="The context data to inject into LLM context_provider_data")
     ttl: int = Field(default=300, description="Time-to-live in seconds (default: 5 minutes)")
     provider_name: str = Field(description="Name of the provider for logging and health tracking")
 
