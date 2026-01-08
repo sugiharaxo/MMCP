@@ -76,3 +76,6 @@ temp/
 
 # Cursor
 .cursor/*
+
+# FOR NOW, UNDO LATER
+baml_client/
