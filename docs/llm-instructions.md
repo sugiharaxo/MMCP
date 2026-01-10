@@ -2,99 +2,99 @@
 alwaysApply: true
 ---
 
-# Project Context: Modular Media Control Plane (MMCP)
+# MMCP Developer Guide
 
-You are the Lead Architect and Senior Python Developer for the **Modular Media Control Plane (MMCP)** project. Your goal is to assist the user in building a lightweight, agentic media server control system.
+Quick reference for LLM assistants working on the Modular Media Control Plane (MMCP) project.
 
-## 1. Core Philosophy
+## Philosophy
 
-- **Lightweight & Idle-Friendly:** The system runs on hardware ranging from high-end servers to Raspberry Pis. It must consume near-zero resources (CPU/RAM) at idle. Avoid heavy background workers (Celery) or infrastructure (Redis) unless absolutely necessary.
-- **Cross-Platform:** Development happens on **Windows**; Deployment happens on **Linux**. Code must be OS-agnostic (strict usage of `pathlib`).
-- **API-First & Headless:** The core is an API. The UI is optional. The primary consumer is an LLM Agent.
-- **Safety:** File operations are sandboxed. Agents cannot execute arbitrary shell code.
-- **Modularity:** Functionality is separated into plugins (Tools).
-- **Explicit Configurability & Transparency:** There are no "magic numbers" in the core logic. Every threshold (timeouts, character limits, retry logic, health heuristics) must be exposed via environment variables or config files. The system should provide clear metrics on why a component (like a plugin) was throttled or disabled.
+- **Lightweight**: Near-zero resource consumption at idle (CPU/RAM). Runs on Raspberry Pis to high-end servers.
+- **Idle Friendly**: No heavy background workers (Celery) or infrastructure (Redis) unless absolutely necessary.
+- **Cross Platform**: Development on Windows, deployment on Linux. Code must be OS-agnostic (strict `pathlib` usage).
+- **Ease of Use**: Designed for laymen. Simple configuration, clear error messages.
+- **Modular Design**: Offload capabilities to plugins. Core system stays minimal.
 
-## 2. Technology Stack (Immutable)
+## Technology Stack
 
-Do not deviate from this stack unless explicitly requested.
+- **Language**: Python 3.11+
+- **Server**: FastAPI (Async)
+- **Validation**: Pydantic v2
+- **Database**: SQLite (SQLAlchemy Async)
+- **Scheduling**: APScheduler (in-process memory store)
+- **LLM**: LiteLLM (universal model support) + BAML (prompt/transport/SAP)
+- **Media**: yt-dlp (library mode), FFmpeg
+- **Scraping**: curl_cffi (TLS fingerprinting), Selectolax (HTML), feedparser (RSS)
+- **Dependencies**: Standard `venv` + `pip` (compatible with `uv`)
 
-- **Language:** Python 3.10+
-- **Server Framework:** **FastAPI** (Async).
-- **Data Validation:** **Pydantic v2**.
-- **Database:** **SQLite** (via **SQLAlchemy** Async). Single file, zero config.
-- **Task Scheduling:** **APScheduler** (In-process memory store).
-- **LLM Integration:**
-  - **LiteLLM:** For universal model support (OpenAI, Ollama, Anthropic).
-  - **Instructor:** For strict JSON schema enforcement and structured output parsing.
-- **Media Acquisition:**
-  - **yt-dlp** (Library mode): Primary downloader for video and `m3u8` streams.
-  - **FFmpeg**: System binary managed via `yt-dlp` or `subprocess` (only if necessary).
-- **Scraping & Discovery:**
-  - **HTTP Client:** **curl_cffi** (to impersonate browser TLS fingerprints).
-  - **Parsing:** **Selectolax** (HTML) and **feedparser** (RSS).
-  - **Note:** Do NOT use Selenium, Playwright, or BeautifulSoup (too heavy/slow).
+## Architecture Overview
 
-## 3. Architecture Pattern
+### LLM Integration (BAML Pipeline)
 
-- **The "Universal Agent":** The system is driven by a ReAct-style loop.
-  - Input: User string.
-  - Processing: LLM (via LiteLLM+Instructor) returns a **Union** of `ToolCall` or `FinalReply`.
-  - Execution: If `ToolCall`, execute Python function -> Feed result back to LLM -> Repeat.
-- **Dependency Management:** Standard `venv` and `pip` (compatible with `uv`).
+We use **BAML** to build prompts, send requests, and format responses via **SAP** (Structured API Protocol):
 
-## 4. Coding Standards & Guidelines
+1. **Prompt Building**: BAML templates (`baml_src/main.baml`) define the agent prompt with tool schemas
+2. **Transport**: BAML handles HTTP requests to LLM providers (OpenAI, Ollama, Anthropic) via LiteLLM
+3. **SAP Formatting**: BAML's SAP ensures structured output parsing (returns `FinalResponse | ToolCall`)
+4. **Type Safety**: Pydantic schemas → BAML TypeBuilder → Runtime validation
 
-1.  **Path Handling:** NEVER use string concatenation for paths. ALWAYS use `pathlib.Path`.
-    - _Bad:_ `os.path.join("downloads", file)`
-    - _Good:_ `Path("downloads") / file`
-2.  **Async/Await:** All I/O bound operations (DB, Network, File Ops) must be `async`.
-3.  **Type Hinting:** Strict type hints are required for Pydantic and FastAPI to generate OpenAPI specs correctly.
-4.  **Error Handling:** Fail gracefully. If a scraper breaks, log it and return a structured error, do not crash the server.
-5.  **Environment:** Config comes from `.env` files (using `pydantic-settings`).
+The agent loop is ReAct-style: User input → LLM decision (ToolCall or FinalResponse) → Execute tool → Feed observation back → Repeat until FinalResponse.
 
-## 6. Declarative Plugin Configuration System
+### Notification System (ANP)
 
-All plugins use a standardized configuration system that ensures type safety, security, and consistent naming:
+Notifications are routed through **ANP** (Agentic Notification Protocol). ANP defines three routing flags:
 
-### Environment Variable Naming Pattern
+- **Address**: `SESSION` (conversation-bound) or `USER` (global)
+- **Target**: `USER` (human delivery guaranteed) or `AGENT` (discretionary)
+- **Handler**: `SYSTEM` (immediate delivery) or `AGENT` (autonomous processing)
 
-- **Format**: `MMCP_PLUGIN_{PLUGIN_SLUG}_{SETTING_NAME}`
-- **Example**: `MMCP_PLUGIN_TMDB_API_KEY` for TMDB plugin API key
-- **Case**: Uppercase with underscores for separation
+See `docs/specs/anp-v1.0.md` for full specification.
 
-### Configuration Classes
+### Plugin System
 
-- **Base**: `PluginConfig` (abstract base class)
-- **Implementation**: Each plugin defines a config class inheriting from `PluginConfig`
-- **Validation**: Pydantic v2 with strict type hints
-- **Secrets**: Use `SecretStr` for sensitive values (API keys, passwords) - automatically masked in logs
+Plugins are discovered from the `/plugins` directory:
 
-### Two-Phase Loading System
+- Any `.py` file with a `Plugin` subclass is loaded
+- Plugins define **Tools** (actions) and **Context Providers** (state information)
+- Two-phase loading: (1) Config validation at startup, (2) Runtime context injection per execution
+- Configuration via environment variables: `MMCP_PLUGIN_{PLUGIN_SLUG}_{SETTING_NAME}`
+- Plugins receive sandboxed paths, system metadata, validated settings, and a namespaced logger
 
-#### Phase 1: Static Validation (Startup)
+## Code Quality Rules
 
-- Configuration loaded and validated at application startup
-- Environment variables resolved and type-checked
-- Plugin initialization blocked if required settings missing
-- Errors reported immediately, preventing runtime failures
+When writing code:
 
-#### Phase 2: Runtime Context Injection (Per Execution)
+- **Modularize**: Split files when reaching ~500 lines. Non-monolithic design.
+- **DRY, SOC, YAGNI**: Don't repeat yourself, separate concerns, you aren't gonna need it.
+- **No Backwards Compatibility**: Never implement backwards compatibility at the cost of cleaner architecture.
+  - No fallbacks
+  - Prefer breaking changes if the result is cleaner architecture
+  - No migration plans (greenfield project)
+- **Trust Boundaries**: Don't implement unnecessary defensive programming. Validate at boundaries, trust upstream invariants.
+- **Industry Standards**: Use standard patterns and conventions.
 
-- Validated config object passed to each tool execution
-- Context isolation - tools cannot access global state directly
-- Consistent interface across all plugins
-- Enables dependency injection and testing
+## Coding Standards
 
-### Security Features
+1. **Path Handling**: Always use `pathlib.Path`, never string concatenation.
+   - ❌ `os.path.join("downloads", file)`
+   - ✅ `Path("downloads") / file`
+2. **Async/Await**: All I/O operations (DB, Network, File) must be `async`.
+3. **Type Hints**: Strict type hints required for Pydantic/FastAPI OpenAPI generation.
+4. **Error Handling**: Fail gracefully. Log structured errors, don't crash the server.
+5. **Configuration**: Use `.env` files with `pydantic-settings`.
+6. **Comments**: Do not write transactional comments, code should be self-descriptive.
 
-- **Secret Masking**: `SecretStr` values never logged in plain text
-- **Namespace Isolation**: Plugin configs cannot conflict with each other
-- **Type Safety**: Runtime guarantees about config structure
-- **No Global Access**: Tools receive only their declared dependencies
+## Glossary
 
-## 7. Documentation Index
+- **ANP**: Agentic Notification Protocol - routing system for notifications between system, agent, and user
+- **BAML**: Basically A Made Up Language (BoundaryML) - prompt/transport layer with structured output parsing
+- **SAP**: Structured API Protocol - BAML's mechanism for ensuring structured LLM responses
+- **ReAct Loop**: Reasoning + Acting loop - agent alternates between reasoning (LLM) and acting (tool execution)
+- **Tool**: A callable action exposed to the agent (defined in plugins)
+- **Context Provider**: A source of state information injected into agent prompts (defined in plugins)
+- **Plugin**: A module containing Tools and/or Context Providers
 
-**Core Architecture:**
+## Documentation
 
-- `docs/agent-loop.md` - Formal specification of the ReAct-style agent loop, execution contracts, and failure handling.
+- `docs/specs/anp-v1.0.md` - Full ANP specification
+- `docs/agent-loop.v0.md` - Agent loop contract and execution details
+- `docs/creating-a-plugin.md` - Plugin development guide
