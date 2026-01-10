@@ -367,9 +367,6 @@ class ReActLoop:
 
             if isinstance(current_response, FinalResponse):
                 final_response_dict = current_response.model_dump()
-                # Import here to avoid circular imports
-                from app.agent.history_manager import HistoryManager
-
                 self.history_manager.add_final_response(history, final_response_dict)
                 await self.session_manager.save_session(session_id, history)
                 return {
@@ -399,8 +396,6 @@ class ReActLoop:
                     "tool handler returned None for both action and response"
                 )
                 error_msg = "Agent stalled during tool execution - internal logic error"
-                from app.agent.history_manager import HistoryManager
-
                 self.history_manager.add_error_message(history, error_msg)
                 await self.session_manager.save_session(session_id, history)
                 return self.handle_llm_error(
@@ -425,10 +420,7 @@ class ReActLoop:
             f"ReAct loop reached max steps ({max_steps}) without final response for session {session_id}"
         )
         error_msg = f"Maximum ReAct steps ({max_steps}) reached without final answer"
-        from app.agent.history_manager import HistoryManager
-
-        history_manager = HistoryManager()
-        history_manager.add_error_message(history, error_msg)
+        self.history_manager.add_error_message(history, error_msg)
         await self.session_manager.save_session(session_id, history)
         return {
             "response": error_msg,

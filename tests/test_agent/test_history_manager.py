@@ -20,8 +20,7 @@ def sample_user_settings():
     """Create sample user settings for testing."""
     return UserSettings(
         llm_max_context_chars=1000,
-        llm_model_name="test-model",
-        llm_temperature=0.7,
+        llm_model="openai:test-model",
         llm_api_key="test-key",
     )
 

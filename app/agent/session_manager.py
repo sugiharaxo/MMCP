@@ -21,11 +21,7 @@ class SessionLockManager:
 
     def get_lock(self, session_id: str) -> asyncio.Lock:
         """Get or create a lock for a specific session. Synchronous for atomicity."""
-        lock = self._locks.get(session_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._locks[session_id] = lock
-        return lock
+        return self._locks.setdefault(session_id, asyncio.Lock())
 
 
 class SessionManager:
