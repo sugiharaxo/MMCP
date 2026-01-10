@@ -412,9 +412,6 @@ class ReActLoop:
                 f"Unknown response type for session {session_id}: {type(current_response)}"
             )
             error_msg = f"Unknown response type: {type(current_response).__name__}"
-            from app.agent.history_manager import HistoryManager
-
-            history_manager = HistoryManager()
             self.history_manager.add_error_message(history, error_msg)
             await self.session_manager.save_session(session_id, history)
             return {
