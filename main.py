@@ -8,7 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.agent.session_manager import AgentSessionManager
+from app.agent.session_manager import SessionManager as AgentSessionManager
 from app.anp.agent_integration import AgentNotificationInjector
 from app.anp.event_bus import EventBus
 from app.anp.notification_dispatcher import NotificationDispatcher
