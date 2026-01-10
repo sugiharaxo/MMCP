@@ -48,7 +48,7 @@ function UniversalAgent(
   // This default is only used if no client_registry is provided
   client "openai-generic/"
 
-  prompt #"
+	prompt #"
 	{% if not merge_system %}
 	{{ _.role("system") }}
 	{% else %}
@@ -60,7 +60,7 @@ function UniversalAgent(
 	You are an instance of MMCP (Modular Media Control Plane), a helpful home server assistant.
 
 	### OBJECTIVE
-	Execute precise media operations or provide direct answers.
+	Execute operations with your tools or provide direct answers.
 	You must output into one of your available JSON schemas.
 
 	### CONSTRAINTS
@@ -92,36 +92,27 @@ function UniversalAgent(
 		}
 	}
 
-	CRITICAL: **ALWAYS** output the schema with `thought` first to plan your action.
-
+	CRITICAL: **ALWAYS** output your JSON response with the `thought` field first to plan your action.
 	{% if history %}
+
 	### CONVERSATION HISTORY
-
 	{% for msg in history %}
-
-	{# --- Handle Tool Results (Observations) --- #}
 	{% if msg.tool_result %}
 	{{ _.role("user") }}
 	<observation tool="{{ msg.tool_name }}">{{ msg.content }}</observation>
+	{% elif merge_system and loop.first and msg.role == "user" %}
 
-	{# --- Handle User Messages --- #}
-	{% elif msg.role == "user" %}
-	{{ _.role("user") }}
-	{{ msg.content }}
-
-	{# --- Handle Model Responses (Final or Tool) --- #}
-	{% elif msg.role == "assistant" %}
-	{{ _.role("assistant") }}
-	{# CRITICAL: Use tojson so the model sees the exact JSON structure it outputted #}
-	{{ msg.content | tojson }}
+	user: {{ msg.content }}
+	{% else %}
+	{{ _.role(msg.role) }}
+	{% if msg.role == "assistant" %}{{ msg.content | tojson }}{% else %}{{ msg.content }}{% endif %}
 	{% endif %}
-
 	{% endfor %}
 	{% endif %}
-
 	{% if user_input %}
 	{{ _.role("user") }}
 	{% if context %}
+
 	### RUNTIME CONTEXT
 	{% for key in context %}
 	{{ key }}: {{ context[key] | tojson }}
@@ -133,5 +124,5 @@ function UniversalAgent(
 	### USER INPUT
 	{{ user_input }}
 	{% endif %}
-  "#
+	"#
 }

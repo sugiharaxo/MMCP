@@ -67,6 +67,15 @@ class LLMPrompt(Protocol):
         """
         ...
 
+    async def close(self) -> None:
+        """
+        Clean up any resources held by the prompt service.
+
+        This method should be called when the service is shutting down
+        to ensure proper cleanup of cached resources, HTTP connections, etc.
+        """
+        ...
+
 
 class AgentOrchestrator(Protocol):
     """Orchestrator Protocol: Coordinates the ReAct loop between layers.
@@ -84,8 +93,6 @@ class AgentOrchestrator(Protocol):
         self,
         user_input: str,
         session_id: str | None = None,
-        turn_instructions: str | None = None,
-        **kwargs,
     ) -> dict:
         """
         Process a user message through the agent loop.

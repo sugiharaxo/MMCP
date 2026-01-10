@@ -166,7 +166,7 @@ class AGUI {
     }`;
 
     // Handle different message types based on metadata
-    if (metadata.type === "tool_call" && metadata.content) {
+    if (metadata && metadata.type === "tool_call" && metadata.content) {
       const toolName = metadata.content.tool_name || "unknown";
       const args = metadata.content.args || {};
 
@@ -193,7 +193,7 @@ class AGUI {
         argsSummary.appendChild(argsPre);
         bubble.appendChild(argsSummary);
       }
-    } else if (metadata.type === "final_response" && metadata.content) {
+    } else if (metadata && metadata.type === "final_response" && metadata.content) {
       // Display the answer
       const answerSpan = document.createElement("span");
       answerSpan.textContent = metadata.content.answer || content;
@@ -215,6 +215,11 @@ class AGUI {
         thoughtDetails.appendChild(thoughtSpan);
         bubble.appendChild(thoughtDetails);
       }
+    } else {
+      // Default: just display the content as text
+      const contentSpan = document.createElement("span");
+      contentSpan.textContent = content;
+      bubble.appendChild(contentSpan);
     }
 
     messageDiv.appendChild(bubble);

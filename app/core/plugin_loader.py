@@ -15,6 +15,7 @@ from app.api.schemas import PluginRuntime, PluginStatus
 from app.core.config import CoreSettings, user_settings
 from app.core.logger import logger
 from app.core.settings_manager import SettingsManager
+from app.services.prompt import ToolInfo
 
 if TYPE_CHECKING:
     pass
@@ -494,3 +495,25 @@ class PluginLoader:
                 continue
 
         return gathered_context
+
+    def build_tool_infos(self) -> list[ToolInfo]:
+        """
+        Build complete tool metadata from loaded tools.
+
+        Returns:
+            List of ToolInfo objects with name, description, schema, and classification.
+        """
+        tool_infos = []
+        for tool in self.tools.values():
+            if hasattr(tool, "input_schema") and tool.input_schema:
+                # All tools should have classification (defaults to "EXTERNAL" in base class)
+                classification = getattr(tool, "classification", "EXTERNAL")
+                tool_infos.append(
+                    ToolInfo(
+                        name=tool.name,
+                        description=tool.description,
+                        schema=tool.input_schema,
+                        classification=classification,
+                    )
+                )
+        return tool_infos

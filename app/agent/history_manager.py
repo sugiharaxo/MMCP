@@ -1,127 +1,130 @@
-"""History Management - handles conversation history operations."""
+"""History Management - handles conversation operations with cached size invariants."""
 
-from typing import Any
+import json
+from typing import Any, Literal
 
-from app.core.config import user_settings
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.core.config import UserSettings
 from app.core.logger import logger
 
 
+class HistoryMessage(BaseModel):
+    """Schema for history messages including cached serialization size."""
+
+    role: Literal["user", "assistant", "system"]
+    content: str | dict[str, Any]
+    type: Literal["final_response", "tool_call"] | None = None
+    tool_result: bool | None = None
+    tool_name: str | None = None
+    size: int = Field(..., alias="_size")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class HistoryManager:
-    """Manages conversation history operations."""
+    """Manages conversation history with O(1) size lookups."""
 
-    def trim_history(self, history: list[dict[str, Any]]) -> None:
-        """
-        Trims history based on character count.
-        Always preserves the system prompt (index 0).
+    MINIMUM_HISTORY_LENGTH = 2
 
-        Args:
-            history: The history list to trim (modified in-place)
-        """
-        if len(history) <= 1:
+    def trim_history(self, history: list[HistoryMessage], user_settings: UserSettings) -> None:
+        """Trims history based on character count using O(N) total complexity."""
+        if len(history) <= self.MINIMUM_HISTORY_LENGTH:
             return
 
-        while True:
-            # Calculate total character count of the history
-            # Handle dict content (tool calls and final responses have dict content)
-            # Handle string content (user messages and tool results have string content)
-            current_chars = sum(
-                len(str(m.get("content") or "")) if isinstance(m.get("content"), (str, dict)) else 0
-                for m in history
-            )
+        current_chars = sum(msg.size for msg in history)
+        limit = user_settings.llm_max_context_chars
 
-            # If we are under the limit or only have system prompt left, stop
-            if current_chars <= user_settings.llm_max_context_chars or len(history) <= 2:
-                break
+        while current_chars > limit and len(history) > self.MINIMUM_HISTORY_LENGTH:
+            popped = history.pop(1)
+            current_chars -= popped.size
+            logger.debug(f"Trimmed history: {current_chars}/{limit} chars remaining.")
 
-            # Remove the oldest non-system message (index 1)
-            # Index 0 is System, Index 1 is the oldest User/Assistant message
-            history.pop(1)
-            # Recalculate after pop for accurate logging
-            current_chars = sum(len(m.get("content") or "") for m in history)
-            logger.debug(f"Trimmed context to {current_chars} chars.")
+    def _calculate_content_size(
+        self, content: str | dict[str, Any] | None, tool_name: str | None = None
+    ) -> int:
+        """Calculates char count as serialized by BAML."""
+        if content is None:
+            return 0
 
-    def add_user_message(self, history: list[dict[str, Any]], content: str) -> None:
+        if isinstance(content, dict):
+            try:
+                base_size = len(json.dumps(content))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Failed to JSON serialize content for size calculation, using str representation"
+                )
+                base_size = len(str(content))
+        else:
+            base_size = len(str(content))
+
+        if tool_name:
+            # Manual overhead calculation to match baml_src/main.baml template
+            # Template line 102: <observation tool="{{ msg.tool_name }}">{{ msg.content }}</observation>
+            # If the template format changes, this calculation must be updated accordingly
+            base_size += len(f'<observation tool="{tool_name}">') + len("</observation>")
+
+        return base_size
+
+    def add_user_message(self, history: list[HistoryMessage], content: str) -> None:
         """Add user message to history."""
-        history.append({"role": "user", "content": content})
+        size = self._calculate_content_size(content)
+        history.append(HistoryMessage(role="user", content=content, _size=size))
 
     def add_final_response(
         self,
-        history: list[dict[str, Any]],
+        history: list[HistoryMessage],
         final_response: dict[str, Any],
     ) -> None:
-        """
-        Add FinalResponse JSON object to history.
-
-        Stores the full JSON object (thought + answer) so the model sees exactly
-        what it outputted previously.
-
-        Args:
-            history: History list to append to
-            final_response: Full FinalResponse dict with 'thought' and 'answer' keys
-        """
+        """Add FinalResponse JSON object to history."""
+        size = self._calculate_content_size(final_response)
         history.append(
-            {
-                "role": "assistant",
-                "type": "final_response",
-                "content": final_response,  # Full JSON dict, not stringified
-            }
+            HistoryMessage(
+                role="assistant", type="final_response", content=final_response, _size=size
+            )
         )
 
     def add_tool_call(
         self,
-        history: list[dict[str, Any]],
+        history: list[HistoryMessage],
         tool_call: dict[str, Any],
     ) -> None:
-        """
-        Add ToolCall JSON object to history.
-
-        Stores the full JSON object (thought + tool_name + args) so the model sees
-        exactly what it outputted previously.
-
-        Args:
-            history: History list to append to
-            tool_call: Full ToolCall dict with 'thought', 'tool_name', and 'args' keys
-        """
+        """Add ToolCall JSON object to history."""
+        size = self._calculate_content_size(tool_call)
         history.append(
-            {
-                "role": "assistant",
-                "type": "tool_call",
-                "content": tool_call,  # Full JSON dict, not stringified
-            }
+            HistoryMessage(role="assistant", type="tool_call", content=tool_call, _size=size)
         )
 
     def add_tool_result(
         self,
-        history: list[dict[str, Any]],
+        history: list[HistoryMessage],
         tool_name: str,
         result: str,
     ) -> None:
-        """
-        Add tool execution result to history.
-
-        Stores the raw result JSON string in content, which will be formatted
-        by BAML template as an observation tag: <observation tool="tool_name">{result}</observation>
-
-        Args:
-            history: History list to append to
-            tool_name: Name of the tool that was executed
-            result: Tool execution result (already converted to JSON string)
-        """
-        # Store raw result JSON - BAML template will format as observation tag
+        """Add tool execution result to history with BAML tag overhead."""
+        size = self._calculate_content_size(result, tool_name=tool_name)
         history.append(
-            {
-                "role": "user",  # Universal role for compatibility
-                "content": result,  # Raw JSON result string
-                "tool_result": True,  # Metadata for BAML to detect and format as observation
-                "tool_name": tool_name,  # Tool name for observation tag
-            }
+            HistoryMessage(
+                role="user",
+                content=result,
+                tool_result=True,
+                tool_name=tool_name,
+                _size=size,
+            )
         )
 
-    def add_error_message(self, history: list[dict[str, Any]], error_message: str) -> None:
+    def add_error_message(self, history: list[HistoryMessage], error_message: str) -> None:
         """Add error message to history for LLM correction."""
-        history.append(
-            {
-                "role": "assistant",
-                "content": f"Error: {error_message} Please provide a valid response.",
-            }
-        )
+        content = f"Error: {error_message} Please provide a valid response."
+        size = self._calculate_content_size(content)
+        history.append(HistoryMessage(role="assistant", content=content, _size=size))
+
+    @staticmethod
+    def to_dict_list(history: list[HistoryMessage]) -> list[dict[str, Any]]:
+        """Convert HistoryMessage list to dict list for persistence/BAML."""
+        return [msg.model_dump(by_alias=True) for msg in history]
+
+    @staticmethod
+    def from_dict_list(history: list[dict[str, Any]]) -> list[HistoryMessage]:
+        """Convert dict list to HistoryMessage list from persistence."""
+        return [HistoryMessage(**msg) for msg in history]

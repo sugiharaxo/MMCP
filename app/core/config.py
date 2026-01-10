@@ -10,11 +10,12 @@ Architecture:
 """
 
 import json
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -93,6 +94,13 @@ def parse_llm_model_string(model_string: str) -> tuple[str, str]:
     return provider, model
 
 
+class HitlDecision(str, Enum):
+    """Enum for Human-in-the-Loop (HITL) decision values."""
+
+    APPROVE = "approve"
+    DENY = "deny"
+
+
 class UserSettings(BaseSettings):
     """
     User-tunable settings (The Dashboard).
@@ -124,6 +132,17 @@ class UserSettings(BaseSettings):
         default="openai:gpt-4o-mini",
         description="LLM model in BAML format: provider:model (e.g., 'openai:gpt-4o' or 'ollama:llama3'). Parsed by parse_llm_model_string() for BAML ClientRegistry.",
     )
+
+    @field_validator("llm_model")
+    @classmethod
+    def validate_llm_model_format(cls, v: str) -> str:
+        """Validate llm_model format using parse_llm_model_string."""
+        try:
+            parse_llm_model_string(v)
+        except ValueError as e:
+            raise ValueError(f"Invalid llm_model format: {e}") from e
+        return v
+
     llm_api_key: str | None = Field(
         default=None,
         description="API key for LLM provider (not needed for Ollama)",
@@ -136,6 +155,21 @@ class UserSettings(BaseSettings):
         default="tool_call",
         description="Instructor mode: 'tool_call' (native tool calling), 'json' (JSON output), or 'markdown_json' (MD+JSON output)",
     )
+    models_requiring_system_merge: tuple[str, ...] = Field(
+        default=("gemma",),
+        description="Model name keywords (case-insensitive) that require system instruction merging. Configure via comma-separated string in env: MMCP_MODELS_REQUIRING_SYSTEM_MERGE='gemma,custom-model'",
+        json_schema_extra={"ui_advanced": True},
+    )
+
+    @field_validator("models_requiring_system_merge", mode="before")
+    @classmethod
+    def parse_models_requiring_system_merge(cls, v: Any) -> tuple[str, ...]:
+        """Parse comma-separated string or list into immutable tuple."""
+        if isinstance(v, str):
+            return tuple(keyword.strip() for keyword in v.split(",") if keyword.strip())
+        if isinstance(v, (list, tuple)):
+            return tuple(str(item).strip() for item in v if str(item).strip())
+        return v if isinstance(v, tuple) else (v,)
 
     # Context Management (Character-based)
     # Defaulting to 100k chars (~50k tokens), which is safe for most models.
@@ -190,6 +224,11 @@ class UserSettings(BaseSettings):
     tool_execution_timeout_seconds: float = Field(
         default=30.0,
         description="Timeout in seconds for tool execution",
+        json_schema_extra={"ui_advanced": True},
+    )
+    session_lock_timeout_seconds: float = Field(
+        default=300.0,
+        description="Timeout in seconds for acquiring session locks (5 minutes default)",
         json_schema_extra={"ui_advanced": True},
     )
     tool_circuit_breaker_threshold: int = Field(

@@ -8,6 +8,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.agent.session_manager import AgentSessionManager
+from app.anp.agent_integration import AgentNotificationInjector
 from app.anp.event_bus import EventBus
 from app.anp.notification_dispatcher import NotificationDispatcher
 from app.anp.watchdog import WatchdogService
@@ -32,6 +34,8 @@ from app.core.logger import logger
 from app.core.plugin_loader import PluginLoader
 from app.core.session_manager import SessionManager
 from app.services.agent import AgentService
+from app.services.prompt import PromptService
+from app.services.type_mapper import TypeMapper
 
 BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
@@ -47,16 +51,21 @@ event_bus.set_session_manager(session_manager)
 notification_dispatcher.set_event_bus(event_bus)
 event_bus.set_notification_dispatcher(notification_dispatcher)
 
-# Create AgentNotificationInjector for context assembly
-from app.anp.agent_integration import AgentNotificationInjector
-
 notification_injector = AgentNotificationInjector(event_bus)
+
+# Initialize required dependencies for AgentService
+type_mapper = TypeMapper()
+prompt_service = PromptService(type_mapper=type_mapper)
+agent_session_manager = AgentSessionManager()
 
 # Initialize AgentService with all dependencies
 agent_service = AgentService(
     plugin_loader=loader,
-    health_monitor=health_monitor,
+    user_settings=user_settings,
     notification_injector=notification_injector,
+    prompt=prompt_service,
+    session_manager=agent_session_manager,
+    health_monitor=health_monitor,
 )
 
 
@@ -86,8 +95,9 @@ async def lifespan(_app: FastAPI):
 
     yield
 
-    # Shutdown: Stop ANP services and close database
+    # Shutdown: Stop ANP services, close agent service, and close database
     await watchdog_service.stop()
+    await agent_service.close()
     await close_database()
 
 

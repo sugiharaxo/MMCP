@@ -4,12 +4,11 @@ Chat API routes for AG-UI.
 Provides the main chat endpoint that handles user messages and HITL interruptions.
 """
 
-from enum import Enum
-
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.core.config import HitlDecision
 from app.core.errors import StaleApprovalError
 from app.services.agent import AgentService
 
@@ -21,19 +20,12 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
 
 
-class Decision(str, Enum):
-    """Decision for pending action."""
-
-    APPROVE = "approve"
-    DENY = "deny"
-
-
 class ActionResponse(BaseModel):
     """Request to respond to a pending action."""
 
     session_id: str
     approval_id: str
-    decision: Decision
+    decision: HitlDecision
 
 
 router = APIRouter(prefix="/api/v1", tags=["chat"])
@@ -117,7 +109,7 @@ async def respond_to_action(
         response = await agent_service.resume_action(
             session_id=action_response.session_id,
             approval_id=action_response.approval_id,
-            decision=action_response.decision.value,
+            decision=action_response.decision,
         )
         # Return the response dict directly to preserve metadata
         return JSONResponse(
