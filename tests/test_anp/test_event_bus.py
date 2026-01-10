@@ -5,7 +5,7 @@ Tests state machine transitions, deduplication, routing, lease-based fencing, an
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, Mock, MagicMock, patch
 
 import pytest
 
@@ -50,7 +50,7 @@ class TestEventBus:
         monkeypatch.setattr("app.anp.event_bus.uuid4", MagicMock(return_value=mock_uuid))
 
         # Mock database session
-        mock_session.add.return_value = None
+        mock_session.add = MagicMock(return_value=None)
         mock_session.commit.return_value = None
         mock_session.refresh.return_value = None
 
@@ -106,8 +106,8 @@ class TestEventBus:
     @pytest.mark.asyncio
     async def test_channel_b_routing(self, event_bus):
         """Test routing to Channel B (SESSION + SYSTEM + USER)."""
-        # Mock session manager - session is active
-        event_bus._session_manager = AsyncMock()
+        # Mock session manager - session is active (sync method)
+        event_bus._session_manager = Mock()
         event_bus._session_manager.is_session_active.return_value = True
 
         # Create event for Channel B: Address=SESSION + Handler=SYSTEM + Target=USER
@@ -190,6 +190,10 @@ class TestEventBus:
         mock_session = AsyncMock()
         mock_session.execute.return_value.rowcount = 1
         mock_session.commit.return_value = None
+
+        # Mock session manager for session expiry check (sync method)
+        event_bus._session_manager = Mock()
+        event_bus._session_manager.is_session_active.return_value = False  # Session expired
 
         # Route to channel (should promote session to user)
         await event_bus._route_to_channel(mock_session, event)
@@ -525,7 +529,7 @@ class TestEventBus:
     @pytest.mark.asyncio
     async def test_escalate_expired_events_with_expired(self, event_bus):
         """Test escalate_expired_events finds and escalates expired events."""
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, UTC
         from unittest.mock import MagicMock
 
         # Create expired event
@@ -535,7 +539,7 @@ class TestEventBus:
             routing={"address": "user", "target": "agent", "handler": "agent"},
             status=EventStatus.DISPATCHED,
             owner_lease=1,
-            delivery_deadline=datetime.utcnow() - timedelta(minutes=5),  # Expired
+            delivery_deadline=datetime.now(UTC) - timedelta(minutes=5),  # Expired
             user_id="test_user",
         )
 

@@ -1,180 +1,130 @@
-"""History Management - handles conversation history operations."""
+"""History Management - handles conversation operations with cached size invariants."""
 
-from typing import Any
+import json
+from typing import Any, Literal
 
-import instructor
+from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.config import user_settings
+from app.core.config import UserSettings
 from app.core.logger import logger
 
 
+class HistoryMessage(BaseModel):
+    """Schema for history messages including cached serialization size."""
+
+    role: Literal["user", "assistant", "system"]
+    content: str | dict[str, Any]
+    type: Literal["final_response", "tool_call"] | None = None
+    tool_result: bool | None = None
+    tool_name: str | None = None
+    size: int = Field(..., alias="_size")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class HistoryManager:
-    """Manages conversation history operations."""
+    """Manages conversation history with O(1) size lookups."""
 
-    def trim_history(self, history: list[dict[str, Any]]) -> None:
-        """
-        Trims history based on character count.
-        Always preserves the system prompt (index 0).
+    MINIMUM_HISTORY_LENGTH = 2
 
-        Args:
-            history: The history list to trim (modified in-place)
-        """
-        if len(history) <= 1:
+    def trim_history(self, history: list[HistoryMessage], user_settings: UserSettings) -> None:
+        """Trims history based on character count using O(N) total complexity."""
+        if len(history) <= self.MINIMUM_HISTORY_LENGTH:
             return
 
-        while True:
-            # Calculate total character count of the history
-            # Handle None content (tool calls have content: None)
-            current_chars = sum(len(m.get("content") or "") for m in history)
+        current_chars = sum(msg.size for msg in history)
+        limit = user_settings.llm_max_context_chars
 
-            # If we are under the limit or only have system prompt left, stop
-            if current_chars <= user_settings.llm_max_context_chars or len(history) <= 2:
-                break
+        while current_chars > limit and len(history) > self.MINIMUM_HISTORY_LENGTH:
+            popped = history.pop(1)
+            current_chars -= popped.size
+            logger.debug(f"Trimmed history: {current_chars}/{limit} chars remaining.")
 
-            # Remove the oldest non-system message (index 1)
-            # Index 0 is System, Index 1 is the oldest User/Assistant message
-            history.pop(1)
-            # Recalculate after pop for accurate logging
-            current_chars = sum(len(m.get("content") or "") for m in history)
-            logger.debug(f"Trimmed context to {current_chars} chars.")
+    def _calculate_content_size(
+        self, content: str | dict[str, Any] | None, tool_name: str | None = None
+    ) -> int:
+        """Calculates char count as serialized by BAML."""
+        if content is None:
+            return 0
 
-    def reconstruct_history(
-        self,
-        base_history: list[dict[str, Any]],
-        system_prompt: str | tuple[str, str],
-        user_input: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """
-        Reconstruct conversation history for LLM consumption.
-
-        Supports both legacy single system prompt and new cache-safe two-message format.
-
-        Args:
-            base_history: The base conversation history
-            system_prompt: System prompt(s) to prepend.
-                          Can be a single string (legacy) or tuple of (static, dynamic) strings.
-            user_input: Optional user input to append
-
-        Returns:
-            Reconstructed history ready for LLM
-        """
-        # Handle cache-safe two-message format
-        if isinstance(system_prompt, tuple):
-            static_prompt, dynamic_prompt = system_prompt
-            # PIN static system message at top (Instructor will append schema here)
-            static_message = {"role": "system", "content": static_prompt}
-            # Add dynamic state as second system message
-            dynamic_message = {"role": "system", "content": dynamic_prompt}
-            # Remove all system messages from base history
-            messages = [m for m in base_history if m["role"] != "system"]
-            history = [static_message, dynamic_message] + messages
+        if isinstance(content, dict):
+            try:
+                base_size = len(json.dumps(content))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Failed to JSON serialize content for size calculation, using str representation"
+                )
+                base_size = len(str(content))
         else:
-            # Legacy single system prompt format
-            system_message = {"role": "system", "content": system_prompt}
-            messages = [m for m in base_history if m["role"] != "system"]
-            history = [system_message] + messages
+            base_size = len(str(content))
 
-        # Add user input if provided
-        if user_input and user_input.strip():
-            history.append({"role": "user", "content": user_input})
+        if tool_name:
+            # Manual overhead calculation to match baml_src/main.baml template
+            # Template line 102: <observation tool="{{ msg.tool_name }}">{{ msg.content }}</observation>
+            # If the template format changes, this calculation must be updated accordingly
+            base_size += len(f'<observation tool="{tool_name}">') + len("</observation>")
 
-        return history
+        return base_size
 
-    def add_assistant_response(self, history: list[dict[str, Any]], content: str) -> None:
-        """Add assistant response to history."""
-        history.append({"role": "assistant", "content": content})
+    def add_user_message(self, history: list[HistoryMessage], content: str) -> None:
+        """Add user message to history."""
+        size = self._calculate_content_size(content)
+        history.append(HistoryMessage(role="user", content=content, _size=size))
+
+    def add_final_response(
+        self,
+        history: list[HistoryMessage],
+        final_response: dict[str, Any],
+    ) -> None:
+        """Add FinalResponse JSON object to history."""
+        size = self._calculate_content_size(final_response)
+        history.append(
+            HistoryMessage(
+                role="assistant", type="final_response", content=final_response, _size=size
+            )
+        )
+
+    def add_tool_call(
+        self,
+        history: list[HistoryMessage],
+        tool_call: dict[str, Any],
+    ) -> None:
+        """Add ToolCall JSON object to history."""
+        size = self._calculate_content_size(tool_call)
+        history.append(
+            HistoryMessage(role="assistant", type="tool_call", content=tool_call, _size=size)
+        )
 
     def add_tool_result(
         self,
-        history: list[dict[str, Any]],
-        tool_call_id: str | None,
+        history: list[HistoryMessage],
+        tool_name: str,
         result: str,
-        instructor_mode: instructor.Mode | None = None,
     ) -> None:
-        """
-        Add tool execution result to history.
-
-        Mode-aware routing:
-        - Mode.TOOLS: Uses role="tool" with tool_call_id (native tool calling format)
-        - Mode.JSON: Uses role="user" with OBSERVATION prefix (for local models that don't support tool role)
-
-        Args:
-            history: History list to append to
-            tool_call_id: Tool call identifier (may be generated UUID for JSON mode)
-            result: Tool execution result
-            instructor_mode: Instructor mode to determine message format
-        """
-        if instructor_mode is None:
-            # Auto-detect mode if not provided
-            from app.core.llm import get_instructor_mode
-
-            instructor_mode = get_instructor_mode(user_settings)
-
-        if instructor_mode == instructor.Mode.TOOLS:
-            # Native tool calling format (OpenAI, Gemini, Claude, DeepSeek)
-            history.append({"role": "tool", "tool_call_id": tool_call_id, "content": str(result)})
-        else:
-            # JSON mode (Ollama/local models) - use user role with prefix
-            history.append(
-                {
-                    "role": "user",
-                    "content": f"OBSERVATION: {str(result)}",
-                }
-            )
-
-    def add_error_message(self, history: list[dict[str, Any]], error_message: str) -> None:
-        """Add error message to history for LLM correction."""
+        """Add tool execution result to history with BAML tag overhead."""
+        size = self._calculate_content_size(result, tool_name=tool_name)
         history.append(
-            {
-                "role": "assistant",
-                "content": f"Error: {error_message} Please provide a valid response.",
-            }
+            HistoryMessage(
+                role="user",
+                content=result,
+                tool_result=True,
+                tool_name=tool_name,
+                _size=size,
+            )
         )
 
-    def add_llm_message(
-        self,
-        history: list[dict[str, Any]],
-        completion_message: Any,
-        instructor_mode: instructor.Mode,
-    ) -> None:
-        """
-        Add LLM completion message to history, handling mode-specific formatting.
+    def add_error_message(self, history: list[HistoryMessage], error_message: str) -> None:
+        """Add error message to history for LLM correction."""
+        content = f"Error: {error_message} Please provide a valid response."
+        size = self._calculate_content_size(content)
+        history.append(HistoryMessage(role="assistant", content=content, _size=size))
 
-        Converts raw completion message to history dict format, preserving
-        tool_calls metadata for Mode.TOOLS compatibility.
+    @staticmethod
+    def to_dict_list(history: list[HistoryMessage]) -> list[dict[str, Any]]:
+        """Convert HistoryMessage list to dict list for persistence/BAML."""
+        return [msg.model_dump(by_alias=True) for msg in history]
 
-        Args:
-            history: History list to append to
-            completion_message: Message object from LLM completion
-            instructor_mode: Instructor mode to determine message format
-        """
-        # If using Mode.TOOLS, preserve tool_calls structure
-        if (
-            instructor_mode == instructor.Mode.TOOLS
-            and hasattr(completion_message, "tool_calls")
-            and completion_message.tool_calls
-        ):
-            # DeepSeek requires content to be explicitly None (not missing) for tool_calls
-            assistant_dict = {
-                "role": "assistant",
-                "content": None,  # Explicitly set to None for DeepSeek compatibility
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": tc.type,
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in completion_message.tool_calls
-                ],
-            }
-        else:
-            # Regular assistant message with content
-            assistant_dict = {
-                "role": "assistant",
-                "content": completion_message.content or "",  # Ensure string, not None
-            }
-
-        history.append(assistant_dict)
+    @staticmethod
+    def from_dict_list(history: list[dict[str, Any]]) -> list[HistoryMessage]:
+        """Convert dict list to HistoryMessage list from persistence."""
+        return [HistoryMessage(**msg) for msg in history]

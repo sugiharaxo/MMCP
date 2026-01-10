@@ -146,21 +146,81 @@ class AGUI {
     }
   }
 
-  addMessage(type, content) {
+  addMessage(type, content, metadata) {
     const messageDiv = document.createElement("div");
-    messageDiv.className = `flex ${type === "user" ? "justify-end" : "justify-start"} mb-4`;
+    messageDiv.className = `flex ${
+      type === "user" ? "justify-end" : "justify-start"
+    } mb-4`;
 
     const bubble = document.createElement("div");
     // Cleaner logic for Tailwind classes
     const colorClasses = {
-        user: "bg-blue-600 text-white",
-        agent: "bg-gray-700 text-gray-100",
-        system: "bg-amber-100 text-amber-900 text-xs italic",
-        error: "bg-red-100 text-red-800 text-xs font-mono"
+      user: "bg-blue-600 text-white",
+      agent: "bg-gray-700 text-gray-100",
+      system: "bg-amber-100 text-amber-900 text-xs italic",
+      error: "bg-red-100 text-red-800 text-xs font-mono",
     };
 
-    bubble.className = `chat-bubble max-w-[80%] rounded-lg px-4 py-2 ${colorClasses[type] || colorClasses.agent}`;
-    bubble.textContent = content;
+    bubble.className = `chat-bubble max-w-[80%] rounded-lg px-4 py-2 ${
+      colorClasses[type] || colorClasses.agent
+    }`;
+
+    // Handle different message types based on metadata
+    if (metadata && metadata.type === "tool_call" && metadata.content) {
+      const toolName = metadata.content.tool_name || "unknown";
+      const args = metadata.content.args || {};
+
+      // Create tool call pill
+      const pill = document.createElement("div");
+      pill.className =
+        "inline-flex items-center gap-1 px-2 py-1 mb-2 bg-blue-500 text-white text-xs rounded-full";
+      pill.innerHTML = `<span>🔧</span><span>Model called <b>${toolName}</b></span>`;
+      bubble.appendChild(pill);
+
+      // Add args summary if present
+      if (Object.keys(args).length > 0) {
+        const argsSummary = document.createElement("details");
+        argsSummary.className = "mt-2 text-xs";
+        const summary = document.createElement("summary");
+        summary.className = "cursor-pointer text-gray-300 hover:text-white";
+        summary.textContent = "Arguments";
+        argsSummary.appendChild(summary);
+
+        const argsPre = document.createElement("pre");
+        argsPre.className =
+          "mt-1 p-2 bg-gray-800 rounded text-xs overflow-x-auto";
+        argsPre.textContent = JSON.stringify(args, null, 2);
+        argsSummary.appendChild(argsPre);
+        bubble.appendChild(argsSummary);
+      }
+    } else if (metadata && metadata.type === "final_response" && metadata.content) {
+      // Display the answer
+      const answerSpan = document.createElement("span");
+      answerSpan.textContent = metadata.content.answer || content;
+      bubble.appendChild(answerSpan);
+
+      // Show thought in a collapsible section
+      if (metadata.content.thought) {
+        const thoughtDetails = document.createElement("details");
+        thoughtDetails.className = "mt-2 text-xs";
+        const summary = document.createElement("summary");
+        summary.className =
+          "cursor-pointer text-gray-300 hover:text-white italic";
+        summary.textContent = "Show reasoning";
+        thoughtDetails.appendChild(summary);
+
+        const thoughtSpan = document.createElement("span");
+        thoughtSpan.className = "block mt-1 text-gray-400 italic";
+        thoughtSpan.textContent = metadata.content.thought;
+        thoughtDetails.appendChild(thoughtSpan);
+        bubble.appendChild(thoughtDetails);
+      }
+    } else {
+      // Default: just display the content as text
+      const contentSpan = document.createElement("span");
+      contentSpan.textContent = content;
+      bubble.appendChild(contentSpan);
+    }
 
     messageDiv.appendChild(bubble);
     this.messages.appendChild(messageDiv);
@@ -195,9 +255,9 @@ class AGUI {
     `;
 
     // Safely set the explanation text after DOM is created
-    const explanationEl = document.getElementById('explanation-text');
+    const explanationEl = document.getElementById("explanation-text");
     if (explanationEl) {
-        explanationEl.textContent = data.explanation || 'No explanation provided';
+      explanationEl.textContent = data.explanation || "No explanation provided";
     }
 
     this.actionModal.classList.remove("hidden");
@@ -230,7 +290,17 @@ class AGUI {
         const result = await response.json();
         // Show approval message only after successful API call
         this.addMessage("user", `Approved: ${toolName}`);
-        this.addMessage("agent", result.response);
+        this.addMessage("agent", result.response || "Action completed", {
+          type: result.type,
+          content:
+            result.content ||
+            (result.type === "final_response"
+              ? {
+                  answer: result.response,
+                  thought: result.thought,
+                }
+              : null),
+        });
         // No need to set this.pendingAction = null here, hideActionModal did it
       } else {
         // Re-open modal on API error so user can try again
@@ -284,7 +354,17 @@ class AGUI {
         const result = await response.json();
         // Show denial message only after successful API call
         this.addMessage("user", `Denied: ${toolName}`);
-        this.addMessage("agent", result.response);
+        this.addMessage("agent", result.response || "Action denied", {
+          type: result.type,
+          content:
+            result.content ||
+            (result.type === "final_response"
+              ? {
+                  answer: result.response,
+                  thought: result.thought,
+                }
+              : null),
+        });
         this.hideActionModal();
       } else {
         // Re-enable buttons on API error so user can try again
@@ -345,10 +425,21 @@ class AGUI {
           // This is an interruption!
           this.showActionModal(result);
         } else {
-          // Regular response
+          // Regular response - pass metadata for proper rendering
           this.addMessage(
             "agent",
-            result.response || result.content || "Response received"
+            result.response || result.content || "Response received",
+            {
+              type: result.type,
+              content:
+                result.content ||
+                (result.type === "final_response"
+                  ? {
+                      answer: result.response,
+                      thought: result.thought,
+                    }
+                  : null),
+            }
           );
         }
       } else {

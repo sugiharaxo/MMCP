@@ -10,10 +10,12 @@ Architecture:
 """
 
 import json
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -67,6 +69,38 @@ def _load_internal_settings() -> dict[str, Any]:
 internal_settings = _load_internal_settings()
 
 
+def parse_llm_model_string(model_string: str) -> tuple[str, str]:
+    """
+    Parse any-llm format string (provider:model) into BAML provider and model.
+
+    Examples:
+        "openai:gpt-4o" -> ("openai", "gpt-4o")
+        "ollama:llama3" -> ("openai-generic", "llama3")  # Ollama uses openai-generic
+        "anthropic:claude-3-5-sonnet" -> ("anthropic", "claude-3-5-sonnet")
+
+    Returns:
+        Tuple of (provider, model_name)
+    """
+    if ":" not in model_string:
+        raise ValueError(f"Invalid model string format: {model_string}. Expected 'provider:model'")
+
+    provider, model = model_string.split(":", 1)
+
+    # Handle special cases for BAML providers
+    if provider.lower() == "ollama":
+        # Ollama uses openai-generic provider in BAML
+        provider = "openai-generic"
+
+    return provider, model
+
+
+class HitlDecision(str, Enum):
+    """Enum for Human-in-the-Loop (HITL) decision values."""
+
+    APPROVE = "approve"
+    DENY = "deny"
+
+
 class UserSettings(BaseSettings):
     """
     User-tunable settings (The Dashboard).
@@ -93,23 +127,49 @@ class UserSettings(BaseSettings):
     )
 
     # Agent/LLM Configuration
-    # LiteLLM standard format: provider/model (e.g., openai/gpt-4o, ollama/llama3)
+    # any-llm universal routing format: provider:model (e.g., openai:gpt-4o, ollama:llama3)
     llm_model: str = Field(
-        default="gemini/gemini-flash-latest",
-        description="LLM model in LiteLLM format: provider/model (e.g., 'openai/gpt-4o' or 'ollama/llama3')",
+        default="openai:gpt-4o-mini",
+        description="LLM model in BAML format: provider:model (e.g., 'openai:gpt-4o' or 'ollama:llama3'). Parsed by parse_llm_model_string() for BAML ClientRegistry.",
     )
+
+    @field_validator("llm_model")
+    @classmethod
+    def validate_llm_model_format(cls, v: str) -> str:
+        """Validate llm_model format using parse_llm_model_string."""
+        try:
+            parse_llm_model_string(v)
+        except ValueError as e:
+            raise ValueError(f"Invalid llm_model format: {e}") from e
+        return v
+
     llm_api_key: str | None = Field(
         default=None,
         description="API key for LLM provider (not needed for Ollama)",
     )
     llm_base_url: str | None = Field(
         default=None,
-        description="Base URL for LLM API (only needed for Ollama/LocalAI, e.g., 'http://localhost:11434')",
+        description="Custom base URL for LLM API (optional). Useful for self-hosted instances, API proxies, or custom endpoints. Examples: Ollama='http://localhost:11434', OpenAI proxy='https://your-proxy.com/v1'",
     )
     instructor_mode: str = Field(
         default="tool_call",
         description="Instructor mode: 'tool_call' (native tool calling), 'json' (JSON output), or 'markdown_json' (MD+JSON output)",
     )
+    models_requiring_system_merge: tuple[str, ...] = Field(
+        default=("gemma",),
+        description="Model name keywords (case-insensitive) that require system instruction merging. Configure via comma-separated string in env: MMCP_MODELS_REQUIRING_SYSTEM_MERGE='gemma,custom-model'",
+        json_schema_extra={"ui_advanced": True},
+    )
+
+    @field_validator("models_requiring_system_merge", mode="before")
+    @classmethod
+    def parse_models_requiring_system_merge(cls, v: Any) -> tuple[str, ...]:
+        """Parse comma-separated string or list into immutable tuple."""
+        if isinstance(v, str):
+            return tuple(keyword.strip() for keyword in v.split(",") if keyword.strip())
+        if isinstance(v, (list, tuple)):
+            return tuple(str(item).strip() for item in v if str(item).strip())
+        return v if isinstance(v, tuple) else (v,)
 
     # Context Management (Character-based)
     # Defaulting to 100k chars (~50k tokens), which is safe for most models.
@@ -164,6 +224,11 @@ class UserSettings(BaseSettings):
     tool_execution_timeout_seconds: float = Field(
         default=30.0,
         description="Timeout in seconds for tool execution",
+        json_schema_extra={"ui_advanced": True},
+    )
+    session_lock_timeout_seconds: float = Field(
+        default=300.0,
+        description="Timeout in seconds for acquiring session locks (5 minutes default)",
         json_schema_extra={"ui_advanced": True},
     )
     tool_circuit_breaker_threshold: int = Field(
@@ -279,6 +344,12 @@ class CoreSettings(BaseModel):
     download_dir: Path = Field(description="Directory for downloaded media files")
     cache_dir: Path = Field(description="Directory for cache files")
 
+
+# Load .env file into os.environ so both UserSettings AND SettingsManager can access it
+# This ensures plugin settings can also read from .env files
+env_file = _get_project_root() / ".env"
+if env_file.exists():
+    load_dotenv(env_file, override=False)  # override=False: actual env vars take precedence
 
 # Global user settings instance
 # Import this in other modules: `from app.core.config import user_settings`

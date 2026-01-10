@@ -155,7 +155,7 @@ class ContextProvider(Protocol):
         """
         The key in the JSON object (e.g., 'jellyfin', 'plex').
 
-        This key will be used in context.llm.media_state[context_key] = data.
+        This key will be used in context.llm.context_provider_data[context_key] = data.
         Must be unique across all context providers.
         """
         ...

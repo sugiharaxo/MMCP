@@ -34,7 +34,7 @@ dev = [
 
 [tool.ruff]
 # Ruff configuration for linting and formatting
-target-version = "py310"
+target-version = "py311"
 line-length = 100
 select = [
     "E",   # pycodestyle errors
@@ -63,7 +63,7 @@ known-first-party = ["app"]
 
 [tool.mypy]
 # MyPy configuration for type checking
-python_version = "3.10"
+python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false

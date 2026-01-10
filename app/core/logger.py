@@ -22,7 +22,7 @@ class MMCPLogger:
 
     def __init__(self, name: str = "mmcp"):
         self.logger = logging.getLogger(name)
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(logging.DEBUG)
         self._setup_handlers()
 
     def _get_log_dir(self) -> Path:
@@ -50,7 +50,7 @@ class MMCPLogger:
         # 1. Console Handler (Standard Output)
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(formatter)
-        console_handler.setLevel(logging.INFO)
+        console_handler.setLevel(logging.DEBUG)
         self.logger.addHandler(console_handler)
 
         # 2. Rotating File Handler (The "Self-Cleaner")
