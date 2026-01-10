@@ -13,14 +13,32 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.agent.session_manager import SessionManager as AgentSessionManager
+from app.anp.agent_integration import AgentNotificationInjector
+from app.anp.event_bus import EventBus
 from app.core.config import user_settings
 from app.services.agent import AgentService
+from app.services.prompt import PromptService
+from app.services.type_mapper import TypeMapper
 
 
 @pytest.mark.asyncio
 async def test_agent_service_initialization(loader):
     """Test that AgentService initializes with default services."""
-    agent_service = AgentService(plugin_loader=loader, user_settings=user_settings)
+    # Create required dependencies
+    event_bus = EventBus()
+    notification_injector = AgentNotificationInjector(event_bus)
+    type_mapper = TypeMapper()
+    prompt_service = PromptService(type_mapper=type_mapper)
+    agent_session_manager = AgentSessionManager()
+
+    agent_service = AgentService(
+        plugin_loader=loader,
+        user_settings=user_settings,
+        notification_injector=notification_injector,
+        prompt=prompt_service,
+        session_manager=agent_session_manager,
+    )
 
     # Verify services are initialized
     assert agent_service.plugin_loader is not None
@@ -51,7 +69,20 @@ async def test_agent_service_process_message_dummy_flow(loader):
     with patch("baml_client.b") as mock_baml:
         mock_baml.UniversalAgent = AsyncMock(return_value=mock_response)
 
-        agent_service = AgentService(plugin_loader=loader, user_settings=user_settings)
+        # Create required dependencies
+        event_bus = EventBus()
+        notification_injector = AgentNotificationInjector(event_bus)
+        type_mapper = TypeMapper()
+        prompt_service = PromptService(type_mapper=type_mapper)
+        agent_session_manager = AgentSessionManager()
+
+        agent_service = AgentService(
+            plugin_loader=loader,
+            user_settings=user_settings,
+            notification_injector=notification_injector,
+            prompt=prompt_service,
+            session_manager=agent_session_manager,
+        )
 
         # Process a test message
         result = await agent_service.process_message(
@@ -89,7 +120,20 @@ async def test_agent_service_session_management(loader):
     with patch("baml_client.b") as mock_baml:
         mock_baml.UniversalAgent = AsyncMock(return_value=mock_response)
 
-        agent_service = AgentService(plugin_loader=loader, user_settings=user_settings)
+        # Create required dependencies
+        event_bus = EventBus()
+        notification_injector = AgentNotificationInjector(event_bus)
+        type_mapper = TypeMapper()
+        prompt_service = PromptService(type_mapper=type_mapper)
+        agent_session_manager = AgentSessionManager()
+
+        agent_service = AgentService(
+            plugin_loader=loader,
+            user_settings=user_settings,
+            notification_injector=notification_injector,
+            prompt=prompt_service,
+            session_manager=agent_session_manager,
+        )
 
         # Process first message (creates session)
         result1 = await agent_service.process_message(

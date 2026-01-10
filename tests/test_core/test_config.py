@@ -34,12 +34,12 @@ def test_directories_created(tmp_path: Path, monkeypatch):
 
 def test_llm_config_from_env(monkeypatch):
     """Test that LLM configuration can be loaded from environment."""
-    monkeypatch.setenv("LLM_MODEL", "gemini/flash")
+    monkeypatch.setenv("LLM_MODEL", "gemini:flash")
     monkeypatch.setenv("LLM_API_KEY", "sk-test-key")
     monkeypatch.setenv("LLM_BASE_URL", "http://localhost:11434")
 
     settings = UserSettings()
 
-    assert settings.llm_model == "gemini/flash"
+    assert settings.llm_model == "gemini:flash"
     assert settings.llm_api_key == "sk-test-key"
     assert settings.llm_base_url == "http://localhost:11434"
