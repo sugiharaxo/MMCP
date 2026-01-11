@@ -21,7 +21,7 @@ Quick reference for LLM assistants working on the Modular Media Control Plane (M
 - **Validation**: Pydantic v2
 - **Database**: SQLite (SQLAlchemy Async)
 - **Scheduling**: APScheduler (in-process memory store)
-- **LLM**: LiteLLM (universal model support) + BAML (prompt/transport/SAP)
+- **LLM**: BAML (prompt/transport/SAP)
 - **Media**: yt-dlp (library mode), FFmpeg
 - **Scraping**: curl_cffi (TLS fingerprinting), Selectolax (HTML), feedparser (RSS)
 - **Dependencies**: Standard `venv` + `pip` (compatible with `uv`)
@@ -44,7 +44,7 @@ Quick reference for LLM assistants working on the Modular Media Control Plane (M
 We use **BAML** to build prompts, send requests, and format responses via **SAP** (Structured API Protocol):
 
 1. **Prompt Building**: BAML templates (`baml_src/main.baml`) define the agent prompt with tool schemas
-2. **Transport**: BAML handles HTTP requests to LLM providers (OpenAI, Ollama, Anthropic) via LiteLLM
+2. **Transport**: BAML handles HTTP requests to LLM providers (OpenAI, Ollama, Anthropic)
 3. **SAP Formatting**: BAML's SAP ensures structured output parsing (returns `FinalResponse | ToolCall`)
 4. **Type Safety**: Pydantic schemas → BAML TypeBuilder → Runtime validation
 
