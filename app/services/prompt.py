@@ -158,33 +158,25 @@ class PromptService:
 
         # Call BAML function - streaming if callback provided, non-streaming otherwise
         try:
+            # Build base baml_options
+            baml_options = {
+                "type_builder": tb,
+                "client_registry": client_registry,
+            }
+
+            # Add streaming callback if provided
             if stream_callback:
-                # Streaming mode: use BAML's built-in streaming with on_tick callback
-                result = await b.UniversalAgent(
-                    user_input=user_input or "",
-                    tools=tools_description,
-                    context=context,
-                    history=baml_history,
-                    merge_system=merge_system,
-                    baml_options={
-                        "type_builder": tb,
-                        "client_registry": client_registry,
-                        "on_tick": lambda chunk_json, function_log: stream_callback(chunk_json),
-                    },
-                )
-            else:
-                # Non-streaming mode: direct call
-                result = await b.UniversalAgent(
-                    user_input=user_input or "",
-                    tools=tools_description,
-                    context=context,
-                    history=baml_history,
-                    merge_system=merge_system,
-                    baml_options={
-                        "type_builder": tb,
-                        "client_registry": client_registry,
-                    },
-                )
+                baml_options["on_tick"] = lambda chunk_json, _: stream_callback(chunk_json)
+
+            # Single UniversalAgent call with conditional options
+            result = await b.UniversalAgent(
+                user_input=user_input or "",
+                tools=tools_description,
+                context=context,
+                history=baml_history,
+                merge_system=merge_system,
+                baml_options=baml_options,
+            )
         except (TimeoutError, ConnectionError) as e:
             # Network/timeout errors should be mapped to ProviderError
             raise map_provider_error(e) from e

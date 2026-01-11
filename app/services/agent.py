@@ -141,15 +141,15 @@ class AgentService:
         try:
             await EventBus().emit_notification(
                 NotificationCreate(
-                    content=f"🤖 Agent Error: {str(llm_error)}",
+                    content=f"Agent Error: {llm_error!s}",
                     routing=RoutingFlags(address="session", target="user", handler="system"),
                     session_id=session_id,
                     metadata={"error_type": type(llm_error).__name__},
                 )
             )
-        except Exception as emit_error:
+        except (ConnectionError, TimeoutError, RuntimeError) as emit_error:
             # Don't let notification emission errors break the main flow
-            logger.warning(f"Failed to emit error notification: {emit_error}")
+            logger.warning(f"Failed to emit error notification: {emit_error!s}")
 
         # Delegate to ReActLoop for standard error response
         return self.react_loop.handle_llm_error(llm_error, history, session_id)
@@ -246,7 +246,7 @@ class AgentService:
                     user_settings=self.user_settings,  # Pass settings for ClientRegistry
                 )
             except Exception as llm_error:
-                error_result = self._handle_llm_error(llm_error, history, session_id)
+                error_result = await self._handle_llm_error(llm_error, history, session_id)
                 await self.session_manager.save_session(session_id, history)
                 return error_result
 
