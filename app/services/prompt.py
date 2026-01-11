@@ -158,25 +158,42 @@ class PromptService:
 
         # Call BAML function - streaming if callback provided, non-streaming otherwise
         try:
-            # Build base baml_options
-            baml_options = {
-                "type_builder": tb,
-                "client_registry": client_registry,
-            }
-
-            # Add streaming callback if provided
             if stream_callback:
-                baml_options["on_tick"] = lambda chunk_json, _: stream_callback(chunk_json)
+                # Use BAML streaming directly for real-time UI updates
+                stream = b.stream.UniversalAgent(
+                    user_input=user_input or "",
+                    tools=tools_description,
+                    context=context,
+                    history=baml_history,
+                    merge_system=merge_system,
+                    baml_options={
+                        "type_builder": tb,
+                        "client_registry": client_registry,
+                    },
+                )
 
-            # Single UniversalAgent call with conditional options
-            result = await b.UniversalAgent(
-                user_input=user_input or "",
-                tools=tools_description,
-                context=context,
-                history=baml_history,
-                merge_system=merge_system,
-                baml_options=baml_options,
-            )
+                # Stream partial responses to UI
+                async for partial_response in stream:
+                    # Send partial response as JSON to WebSocket
+                    if hasattr(partial_response, "model_dump"):
+                        chunk_json = partial_response.model_dump_json()
+                        stream_callback(chunk_json)
+
+                # Get final result after streaming completes
+                result = await stream.get_final_response()
+            else:
+                # Non-streaming mode: direct call
+                result = await b.UniversalAgent(
+                    user_input=user_input or "",
+                    tools=tools_description,
+                    context=context,
+                    history=baml_history,
+                    merge_system=merge_system,
+                    baml_options={
+                        "type_builder": tb,
+                        "client_registry": client_registry,
+                    },
+                )
         except (TimeoutError, ConnectionError) as e:
             # Network/timeout errors should be mapped to ProviderError
             raise map_provider_error(e) from e
