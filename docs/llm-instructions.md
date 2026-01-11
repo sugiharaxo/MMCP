@@ -26,6 +26,17 @@ Quick reference for LLM assistants working on the Modular Media Control Plane (M
 - **Scraping**: curl_cffi (TLS fingerprinting), Selectolax (HTML), feedparser (RSS)
 - **Dependencies**: Standard `venv` + `pip` (compatible with `uv`)
 
+### Frontend Stack
+
+- **UI Framework**: SolidJS - High-performance signals bound directly to DOM nodes. No VDOM overhead during streaming.
+- **Stream Handler**: RxJS 7+ - Uses `switchMap` for **Lease Fencing** and `scan` for BAML chunk accumulation.
+- **HITL Layer**: `jsfe` - A "Black Box" Web Component that renders tool schemas without the UI needing to know about them.
+- **State Bridge**: BroadcastChannel - Ensures the `owner_lease` is consistent across multiple browser tabs to prevent double-interactions.
+- **Acknowledgment**: Intersection Observer - Batched (500ms) signals to the backend to fulfill the ANP Shared Awareness requirement.
+- **Validation**: Zod - Standard TypeScript-first validation for client-side inputs and API responses.
+- **Styling**: Tailwind CSS - Provides the "Blocks AI" look with zero CSS bloat.
+- **Build Tool**: Vite - Fast development and clean static `/dist` output for FastAPI.
+
 ## Architecture Overview
 
 ### LLM Integration (BAML Pipeline)
