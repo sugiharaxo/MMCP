@@ -77,6 +77,7 @@ class NotificationAck(BaseModel):
 
     type: Literal["ack"] = "ack"
     id: str = Field(description="Notification ID to acknowledge")
+    lease_id: int | None = Field(default=None, description="Owner lease ID for lease-based fencing")
 
 
 class SessionCreate(BaseModel):

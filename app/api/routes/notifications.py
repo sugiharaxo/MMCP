@@ -5,7 +5,7 @@ Provides WebSocket endpoint, ACK endpoint, and notification query endpoint.
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import (
@@ -59,7 +59,7 @@ async def create_session():
     session_id = session_manager.create_session()
 
     # Return session info
-    return SessionResponse(id=session_id, created_at=datetime.now(timezone.utc))
+    return SessionResponse(id=session_id, created_at=datetime.now(UTC))
 
 
 @router.delete("/sessions/{session_id}")
@@ -90,7 +90,7 @@ async def list_sessions():
     active_sessions = list(session_manager.active_sessions)
 
     return [
-        SessionResponse(id=session_id, created_at=datetime.now(timezone.utc))
+        SessionResponse(id=session_id, created_at=datetime.now(UTC))
         for session_id in active_sessions
     ]
 
@@ -111,14 +111,16 @@ async def websocket_endpoint(websocket: WebSocket):
     notification_dispatcher.register_connection(websocket, user_id)
 
     try:
-        # Send pending notifications (SYSTEM handler only)
+        # Bootstrap flush: Send pending DISPATCHED notifications (SYSTEM handler only)
+        # Note: Only SYSTEM handler events are sent to UI via WebSocket (Channel A/B).
+        # AGENT handler events go to agent context (Channel C), not the UI.
         async with get_session() as session:
             stmt = select(EventLedger).where(
                 and_(
                     EventLedger.status == EventStatus.DISPATCHED,
                     EventLedger.user_id == user_id,
                     EventLedger.routing["handler"].as_string()
-                    == "system",  # Only SYSTEM notifications
+                    == "system",  # Only SYSTEM notifications for UI delivery
                 )
             )
             result = await session.execute(stmt)
@@ -134,7 +136,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 message = json.loads(data)
 
                 if message.get("type") == "ack":
-                    success = await notification_dispatcher.handle_ack(message, user_id)
+                    # Convert WebSocket message to NotificationAck schema for validation
+                    ack_data = NotificationAck(
+                        id=message.get("id"), lease_id=message.get("lease_id")
+                    )
+                    success = await notification_dispatcher.handle_ack(ack_data, user_id)
                     if success:
                         await websocket.send_text(json.dumps({"status": "ok"}))
                     else:
@@ -162,9 +168,8 @@ async def ack_endpoint(
     """
     # user_id = "default"  # Single-user system for now - reserved for future use
 
-    # Convert NotificationAck to dict format expected by NotificationDispatcher
-    ack_dict = {"event_id": ack.id, "lease_id": getattr(ack, "lease_id", 1)}
-    success = await notification_dispatcher.handle_ack(ack_dict, "default")
+    # Pass NotificationAck directly for validation
+    success = await notification_dispatcher.handle_ack(ack, "default")
 
     if success:
         return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "ok", "id": ack.id})

@@ -10,6 +10,7 @@ Has zero knowledge of networking or API keys - BAML handles everything.
 """
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -106,9 +107,13 @@ class PromptService:
         user_settings: UserSettings,
         user_input: str | None = None,
         history: list[dict[str, Any]] | None = None,
+        stream_callback: Callable[[str], None] | None = None,
     ) -> "FinalResponse | ToolCall":
         """
         Single method that uses BAML end-to-end: prompt → transport → SAP.
+
+        Supports both streaming and non-streaming modes. When stream_callback is provided,
+        chunks are sent via callback for real-time UI updates. Otherwise, returns final result.
 
         Replaces the old compile_prompt() + transport.send_message() + parse_response() flow.
 
@@ -118,6 +123,7 @@ class PromptService:
             user_settings: UserSettings instance for LLM configuration
             user_input: Optional new user message (None if in history)
             history: Optional conversation history
+            stream_callback: Optional callback to send chunks as JSON strings (for UI streaming)
 
         Returns:
             FinalResponse | ToolCall: Parsed response from BAML. FinalResponse contains
@@ -150,19 +156,35 @@ class PromptService:
         # Get cached ClientRegistry (avoids HTTP client thrashing)
         client_registry = self._build_client_registry(user_settings)
 
-        # Call BAML function directly - BAML handles everything
+        # Call BAML function - streaming if callback provided, non-streaming otherwise
         try:
-            result = await b.UniversalAgent(
-                user_input=user_input or "",
-                tools=tools_description,
-                context=context,
-                history=baml_history,
-                merge_system=merge_system,
-                baml_options={
-                    "type_builder": tb,
-                    "client_registry": client_registry,
-                },
-            )
+            if stream_callback:
+                # Streaming mode: use BAML's built-in streaming with on_tick callback
+                result = await b.UniversalAgent(
+                    user_input=user_input or "",
+                    tools=tools_description,
+                    context=context,
+                    history=baml_history,
+                    merge_system=merge_system,
+                    baml_options={
+                        "type_builder": tb,
+                        "client_registry": client_registry,
+                        "on_tick": lambda chunk_json, function_log: stream_callback(chunk_json),
+                    },
+                )
+            else:
+                # Non-streaming mode: direct call
+                result = await b.UniversalAgent(
+                    user_input=user_input or "",
+                    tools=tools_description,
+                    context=context,
+                    history=baml_history,
+                    merge_system=merge_system,
+                    baml_options={
+                        "type_builder": tb,
+                        "client_registry": client_registry,
+                    },
+                )
         except (TimeoutError, ConnectionError) as e:
             # Network/timeout errors should be mapped to ProviderError
             raise map_provider_error(e) from e

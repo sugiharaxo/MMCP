@@ -115,8 +115,10 @@ class TestNotificationDispatcher:
     @pytest.mark.asyncio
     async def test_handle_ack_success(self, dispatcher):
         """Test successful ACK processing."""
+        from app.anp.schemas import NotificationAck
+
         user_id = "test_user"
-        ack_data = {"event_id": "test-event-123", "lease_id": 1}
+        ack_data = NotificationAck(id="test-event-123", lease_id=1)
 
         # Mock successful EventBus response
         dispatcher._event_bus.mark_delivered.return_value = True
@@ -129,8 +131,10 @@ class TestNotificationDispatcher:
     @pytest.mark.asyncio
     async def test_handle_ack_failure(self, dispatcher):
         """Test ACK processing failure."""
+        from app.anp.schemas import NotificationAck
+
         user_id = "test_user"
-        ack_data = {"event_id": "test-event-123", "lease_id": 1}
+        ack_data = NotificationAck(id="test-event-123", lease_id=1)
 
         # Mock failed EventBus response
         dispatcher._event_bus.mark_delivered.return_value = False
