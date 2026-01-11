@@ -14,6 +14,7 @@ from app.core.logger import logger
 if TYPE_CHECKING:
     from app.anp.event_bus import EventBus
     from app.anp.models import EventLedger
+    from app.anp.schemas import NotificationAck
 
 
 class NotificationDispatcher:
@@ -90,6 +91,7 @@ class NotificationDispatcher:
             "content": event.content,
             "routing": event.routing,
             "metadata": event.event_metadata,
+            "owner_lease": event.owner_lease,
             "timestamp": event.created_at.isoformat() if event.created_at else None,
         }
 
@@ -103,12 +105,12 @@ class NotificationDispatcher:
             self.unregister_connection(user_id)
             return False
 
-    async def handle_ack(self, ack_data: dict, user_id: str) -> bool:
+    async def handle_ack(self, ack_data: "NotificationAck", user_id: str) -> bool:
         """
         Process ACK message with lease fencing.
 
         Args:
-            ack_data: ACK message data
+            ack_data: NotificationAck schema instance
             user_id: User ID for verification
 
         Returns:
@@ -118,8 +120,8 @@ class NotificationDispatcher:
             logger.error("EventBus not set in NotificationDispatcher")
             return False
 
-        event_id = ack_data.get("event_id")
-        lease_id = ack_data.get("lease_id", 1)
+        event_id = ack_data.id
+        lease_id = ack_data.lease_id
 
         if not event_id:
             logger.error("ACK missing event_id")

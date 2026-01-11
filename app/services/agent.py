@@ -130,10 +130,28 @@ class AgentService:
         """Stringify tool result by delegating to the ReActLoop."""
         return self.react_loop.stringify_tool_result(tool_result)
 
-    def _handle_llm_error(
+    async def _handle_llm_error(
         self, llm_error: Exception, history: list[HistoryMessage], session_id: str
     ) -> dict[str, Any]:
-        """Handle LLM error by delegating to the ReActLoop."""
+        """Handle LLM error and emit ANP notification for UI display."""
+        # Emit ANP notification for UI display
+        from app.anp.event_bus import EventBus
+        from app.anp.schemas import NotificationCreate, RoutingFlags
+
+        try:
+            await EventBus().emit_notification(
+                NotificationCreate(
+                    content=f"Agent Error: {llm_error!s}",
+                    routing=RoutingFlags(address="session", target="user", handler="system"),
+                    session_id=session_id,
+                    metadata={"error_type": type(llm_error).__name__},
+                )
+            )
+        except (ConnectionError, TimeoutError, RuntimeError) as emit_error:
+            # Don't let notification emission errors break the main flow
+            logger.warning(f"Failed to emit error notification: {emit_error!s}")
+
+        # Delegate to ReActLoop for standard error response
         return self.react_loop.handle_llm_error(llm_error, history, session_id)
 
     async def _run_under_session_lock(
@@ -228,7 +246,7 @@ class AgentService:
                     user_settings=self.user_settings,  # Pass settings for ClientRegistry
                 )
             except Exception as llm_error:
-                error_result = self._handle_llm_error(llm_error, history, session_id)
+                error_result = await self._handle_llm_error(llm_error, history, session_id)
                 await self.session_manager.save_session(session_id, history)
                 return error_result
 
