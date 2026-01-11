@@ -241,17 +241,9 @@ async def get_tools():
 
 # --- UI / Static Files ---
 
-# Mount static files (for CSS/JS)
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
-
-@app.get("/")
-async def get_ui():
-    """Serves the Vanilla JS Web Interface."""
-    index_path = STATIC_DIR / "index.html"
-    if not index_path.exists():
-        return {"message": "MMCP is running, but index.html was not found in static/"}
-    return FileResponse(index_path)
+# Mount static files at root (for SolidJS SPA)
+if STATIC_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="web")
 
 
 if __name__ == "__main__":
