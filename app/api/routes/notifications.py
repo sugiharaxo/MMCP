@@ -50,9 +50,11 @@ def get_health_monitor(request: Request) -> HealthMonitor:
 async def create_session():
     """
     Create a new chat session.
-
-    Sessions represent persistent chat conversations.
-    They exist until explicitly deleted.
+    
+    The session persists until explicitly deleted.
+    
+    Returns:
+        SessionResponse: Object containing the new session's `id` and `created_at` timestamp (UTC).
     """
     # user_id = "default"  # Single-user system for now - reserved for future use
 
@@ -78,9 +80,10 @@ async def delete_session(session_id: str):
 @router.get("/sessions", response_model=list[SessionResponse])
 async def list_sessions():
     """
-    List all active chat sessions for the user.
-
-    Returns sessions that exist (i.e., chats that haven't been deleted).
+    Retrieve the list of active chat sessions.
+    
+    Returns:
+        A list of SessionResponse objects for each active session; each response contains the session `id` and a `created_at` timestamp set to the current UTC time.
     """
     # user_id = "default"  # Single-user system for now - reserved for future use
 
@@ -98,10 +101,9 @@ async def list_sessions():
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """
-    WebSocket endpoint for ANP notification delivery.
-
-    Maintains one connection per user for all their chat sessions.
-    Notifications include session_id for client-side routing.
+    Handle a WebSocket connection for delivering ANP notifications to a client.
+    
+    Registers the connection for a single default user, flushes pending events with status DISPATCHED routed to the "system" handler to the client, and then listens for incoming JSON messages. When a message of type "ack" is received, it is validated as a NotificationAck and forwarded to the NotificationDispatcher; the endpoint returns an `{"status": "ok"}` or an error payload based on the dispatch result. On disconnect the connection is unregistered. This endpoint currently operates with a single hard-coded user_id ("default").
     """
     await websocket.accept()
 
@@ -162,9 +164,13 @@ async def ack_endpoint(
     ack: NotificationAck,
 ):
     """
-    HTTP endpoint for ACK (alternative to WebSocket ACK).
-
-    Useful for clients that don't support WebSockets.
+    Accept an HTTP NotificationAck and forward it to the notification dispatcher for processing.
+    
+    Parameters:
+        ack (NotificationAck): ACK payload containing the notification `id` and `lease_id` used to acknowledge delivery. This endpoint is intended for clients that cannot use the WebSocket ACK flow.
+    
+    Returns:
+        JSONResponse: On success, HTTP 200 with {"status": "ok", "id": <ack.id>}. On failure, HTTP 400 with {"status": "error", "message": "ACK failed"}.
     """
     # user_id = "default"  # Single-user system for now - reserved for future use
 

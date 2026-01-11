@@ -127,13 +127,25 @@ class AgentService:
         return await self.react_loop.execute_tool(tool, tool_args)
 
     def _stringify_tool_result(self, tool_result: Any) -> str:
-        """Stringify tool result by delegating to the ReActLoop."""
+        """
+        Convert a tool execution result into its string representation.
+        
+        Returns:
+            str: The tool result formatted as a string.
+        """
         return self.react_loop.stringify_tool_result(tool_result)
 
     async def _handle_llm_error(
         self, llm_error: Exception, history: list[HistoryMessage], session_id: str
     ) -> dict[str, Any]:
-        """Handle LLM error and emit ANP notification for UI display."""
+        """
+        Handle an LLM error by emitting a UI notification and returning the ReActLoop error response.
+        
+        Emits an ANP notification containing the error message and error type for UI display; notification failures are logged and do not alter the returned result. Delegates to the ReActLoop to produce the standard error response.
+        
+        Returns:
+            dict[str, Any]: The error response produced by the ReActLoop.
+        """
         # Emit ANP notification for UI display
         from app.anp.event_bus import EventBus
         from app.anp.schemas import NotificationCreate, RoutingFlags
@@ -157,7 +169,12 @@ class AgentService:
     async def _run_under_session_lock(
         self, session_id: str, coro: Callable[[], Awaitable[T]]
     ) -> T | dict[str, Any]:
-        """Execute agent logic under a session lock with timeout handling."""
+        """
+        Run the given coroutine under a session-specific lock and return its result, enforcing a timeout to prevent concurrent processing.
+        
+        Returns:
+            The value returned by `coro()` when it completes under the lock, or a dict with keys `"response"`, `"type"`, and `"session_id"` describing a timeout error if acquiring or holding the lock exceeded the configured timeout.
+        """
         lock = self.lock_manager.get_lock(session_id)
         try:
             async with asyncio.timeout(self.user_settings.session_lock_timeout_seconds):

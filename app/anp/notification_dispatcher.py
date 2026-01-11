@@ -66,13 +66,13 @@ class NotificationDispatcher:
 
     async def send_notification(self, event: "EventLedger") -> bool:
         """
-        Send notification to user's WebSocket with session_id in payload.
-
-        Args:
-            event: EventLedger instance to send
-
+        Send a notification payload for the given event to the user's WebSocket, including session_id and owner_lease for client routing.
+        
+        Parameters:
+            event (EventLedger): Event record whose fields are used to build the notification payload.
+        
         Returns:
-            True if sent successfully, False otherwise
+            True if the payload was sent successfully to the user's WebSocket, False otherwise.
         """
         user_id = event.user_id
         if user_id not in self._connections:
@@ -107,14 +107,14 @@ class NotificationDispatcher:
 
     async def handle_ack(self, ack_data: "NotificationAck", user_id: str) -> bool:
         """
-        Process ACK message with lease fencing.
-
-        Args:
-            ack_data: NotificationAck schema instance
-            user_id: User ID for verification
-
+        Process an incoming notification ACK and apply lease-fenced delivery confirmation.
+        
+        Parameters:
+            ack_data (NotificationAck): ACK payload containing the `id` of the event and the `lease_id` used for lease fencing.
+            user_id (str): ID of the user sending the ACK, used for verification and logging context.
+        
         Returns:
-            True if ACK processed successfully, False otherwise
+            `True` if the event was marked delivered and the lease was valid, `False` otherwise.
         """
         if not self._event_bus:
             logger.error("EventBus not set in NotificationDispatcher")

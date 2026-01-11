@@ -110,29 +110,22 @@ class PromptService:
         stream_callback: Callable[[str], None] | None = None,
     ) -> "FinalResponse | ToolCall":
         """
-        Single method that uses BAML end-to-end: prompt → transport → SAP.
-
-        Supports both streaming and non-streaming modes. When stream_callback is provided,
-        chunks are sent via callback for real-time UI updates. Otherwise, returns final result.
-
-        Replaces the old compile_prompt() + transport.send_message() + parse_response() flow.
-
-        Args:
-            tool_infos: List of ToolInfo containing tool metadata
-            context_data: Raw context dictionary from context providers
-            user_settings: UserSettings instance for LLM configuration
-            user_input: Optional new user message (None if in history)
-            history: Optional conversation history
-            stream_callback: Optional callback to send chunks as JSON strings (for UI streaming)
-
+        Execute an end-to-end BAML prompt flow and return either a final response or a tool invocation.
+        
+        Parameters:
+            tool_infos (list[ToolInfo]): Metadata and schemas for available tools.
+            context_data (dict[str, Any]): Context provided by context sources to include in the prompt.
+            user_settings (UserSettings): LLM configuration (model, keys, provider-specific options).
+            user_input (str | None): Optional new user message; if None, conversation history is expected to contain the latest user turn.
+            history (list[dict[str, Any]] | None): Optional conversation history formatted for BAML.
+            stream_callback (Callable[[str], None] | None): If provided, receives JSON chunk strings from the agent as they arrive for real-time streaming UI updates.
+        
         Returns:
-            FinalResponse | ToolCall: Parsed response from BAML. FinalResponse contains
-            the agent's final answer, ToolCall contains the tool name and arguments
-            for execution.
-
+            FinalResponse | ToolCall: `FinalResponse` when the agent produced a final textual answer; `ToolCall` when the agent selected a tool and provided arguments for execution.
+        
         Raises:
-            AgentLogicError: For validation/format errors (non-retryable)
-            ProviderError: For network/timeout/rate limit errors (may be retryable)
+            AgentLogicError: For validation or formatting errors reported by BAML (non-retryable).
+            ProviderError: For network, timeout, or provider-level errors (may be retryable).
         """
         # Lazy load heavy BAML client types only when needed
         from baml_client import b
