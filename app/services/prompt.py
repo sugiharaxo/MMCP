@@ -173,11 +173,11 @@ class PromptService:
                 )
 
                 # Stream partial responses to UI
+                # Stream yields stream_types.FinalResponse | stream_types.ToolCall (both Pydantic BaseModel)
                 async for partial_response in stream:
-                    # Send partial response as JSON to WebSocket
-                    if hasattr(partial_response, "model_dump"):
-                        chunk_json = partial_response.model_dump_json()
-                        stream_callback(chunk_json)
+                    # Pydantic BaseModel always has model_dump_json()
+                    chunk_json = partial_response.model_dump_json()
+                    stream_callback(chunk_json)
 
                 # Get final result after streaming completes
                 result = await stream.get_final_response()
