@@ -10,8 +10,11 @@
   },
   "dependencies": {
     "@jsfe/form": "^0.4.0",
+    "@kobalte/core": "^0.13.11",
     "@tailwindcss/vite": "^4.1.18",
+    "@tanstack/solid-virtual": "^3.13.18",
     "lucide-solid": "^0.562.0",
+    "marked": "^17.0.1",
     "rxjs": "^7.8.2",
     "solid-js": "^1.9.10",
     "tailwindcss": "^4.1.18",

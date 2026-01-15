@@ -5,7 +5,7 @@ Handles routing logic, state machine, deduplication, lease-based fencing, and es
 """
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -21,6 +21,7 @@ from app.core.logger import logger
 if TYPE_CHECKING:
     from app.anp.notification_dispatcher import NotificationDispatcher
     from app.core.session_manager import SessionManager
+    from app.services.agent import AgentService
 
 
 class EventBus:
@@ -55,6 +56,7 @@ class EventBus:
         self._agent_turn_lock = asyncio.Lock()
         self._session_manager: SessionManager | None = None
         self._notification_dispatcher: NotificationDispatcher | None = None
+        self._agent_service: AgentService | None = None
 
         self._initialized = True
         logger.info("EventBus initialized")
@@ -66,6 +68,10 @@ class EventBus:
     def set_notification_dispatcher(self, dispatcher: "NotificationDispatcher") -> None:
         """Set the notification dispatcher for delivery."""
         self._notification_dispatcher = dispatcher
+
+    def set_agent_service(self, agent_service: "AgentService") -> None:
+        """Set the agent service for autonomous turn triggering."""
+        self._agent_service = agent_service
 
     async def emit_notification(self, notification: NotificationCreate) -> str:
         """
@@ -95,7 +101,7 @@ class EventBus:
                 id=str(uuid4()),
                 content=notification.content,
                 deduplication_key=notification.deduplication_key,
-                event_metadata=notification.metadata,
+                event_metadata=notification.metadata or {},
                 routing=notification.routing.model_dump(),
                 agent_instructions=(
                     notification.agent_instructions.model_dump()
@@ -121,7 +127,25 @@ class EventBus:
             # Route to appropriate channel
             await self._route_to_channel(session, event)
 
+            # Trigger Logic (The Hub)
+            if (
+                (event.routing.get("handler") == "agent" or event.routing.get("target") == "agent")
+                and event.event_metadata.get("anp_turn_depth", 0) < 3
+                and self._agent_service
+            ):
+                asyncio.create_task(self._agent_service.process_autonomous_turn(event))
+
             return str(event.id)
+
+    async def _get_event(self, event_id: str) -> EventLedger:
+        """Retrieve an event by ID."""
+        async with get_session() as session:
+            stmt = select(EventLedger).where(EventLedger.id == event_id)
+            result = await session.execute(stmt)
+            event = result.scalar_one_or_none()
+            if not event:
+                raise ValueError(f"Event {event_id} not found")
+            return event
 
     async def _handle_deduplication(
         self,
@@ -148,7 +172,7 @@ class EventBus:
         if existing:
             # Update existing event
             existing.content = notification.content
-            existing.event_metadata = notification.metadata
+            existing.event_metadata = notification.metadata or {}
             existing.delivery_deadline = notification.delivery_deadline
             # Reset status to PENDING if it was DISPATCHED (atomic transition)
             if existing.status == EventStatus.DISPATCHED:
@@ -231,12 +255,11 @@ class EventBus:
             # Channel C: Agent context (set TTL if not provided)
             if not event.delivery_deadline:
                 default_ttl = internal_settings["event_bus"]["default_ttl_seconds"]
-                event.delivery_deadline = datetime.now(timezone.utc) + timedelta(
-                    seconds=default_ttl
-                )
+                event.delivery_deadline = datetime.now(UTC) + timedelta(seconds=default_ttl)
             await self._transition_state(
                 session, event.id, EventStatus.PENDING, EventStatus.DISPATCHED, None
             )
+
             logger.debug(f"Routed to Channel C: {event.id}")
 
     async def _transition_state(
@@ -338,7 +361,7 @@ class EventBus:
                 stmt = (
                     update(EventLedger)
                     .where(EventLedger.id == event_id)
-                    .values(ack_at=datetime.now(timezone.utc))
+                    .values(ack_at=datetime.now(UTC))
                 )
                 await session.execute(stmt)
                 await session.commit()
@@ -390,7 +413,7 @@ class EventBus:
         """
         async with get_session() as session:
             # Query expired events in PENDING/DISPATCHED
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             stmt = select(EventLedger).where(
                 and_(
                     EventLedger.delivery_deadline < now,

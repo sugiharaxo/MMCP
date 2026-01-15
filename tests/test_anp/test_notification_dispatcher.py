@@ -41,6 +41,7 @@ class TestNotificationDispatcher:
             user_id="test_user",
             session_id="test_session",
             owner_lease=1,
+            event_metadata={},
         )
 
     @pytest.mark.asyncio

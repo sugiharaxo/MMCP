@@ -123,7 +123,7 @@ class PromptService:
             user_settings: UserSettings instance for LLM configuration
             user_input: Optional new user message (None if in history)
             history: Optional conversation history
-            stream_callback: Optional callback to send chunks as JSON strings (for UI streaming)
+            stream_callback: Optional callback to send raw Pydantic models (FinalResponse | ToolCall from stream_types)
 
         Returns:
             FinalResponse | ToolCall: Parsed response from BAML. FinalResponse contains
@@ -175,9 +175,8 @@ class PromptService:
                 # Stream partial responses to UI
                 # Stream yields stream_types.FinalResponse | stream_types.ToolCall (both Pydantic BaseModel)
                 async for partial_response in stream:
-                    # Pydantic BaseModel always has model_dump_json()
-                    chunk_json = partial_response.model_dump_json()
-                    stream_callback(chunk_json)
+                    # Pass raw Pydantic model to callback for type-safe processing
+                    stream_callback(partial_response)
 
                 # Get final result after streaming completes
                 result = await stream.get_final_response()

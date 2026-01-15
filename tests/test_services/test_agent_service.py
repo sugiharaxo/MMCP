@@ -38,6 +38,7 @@ async def test_agent_service_initialization(loader):
         notification_injector=notification_injector,
         prompt=prompt_service,
         session_manager=agent_session_manager,
+        event_bus=event_bus,
     )
 
     # Verify services are initialized
@@ -82,6 +83,7 @@ async def test_agent_service_process_message_dummy_flow(loader):
             notification_injector=notification_injector,
             prompt=prompt_service,
             session_manager=agent_session_manager,
+            event_bus=event_bus,
         )
 
         # Process a test message
@@ -133,6 +135,7 @@ async def test_agent_service_session_management(loader):
             notification_injector=notification_injector,
             prompt=prompt_service,
             session_manager=agent_session_manager,
+            event_bus=event_bus,
         )
 
         # Process first message (creates session)

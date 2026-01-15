@@ -57,6 +57,7 @@ class TestWebSocketManager:
             content="Test notification",
             routing={"address": "user", "target": "user", "handler": "system"},
             user_id="user1",
+            event_metadata={},
         )
 
         success = await ws_manager.send_notification(event)
@@ -75,6 +76,7 @@ class TestWebSocketManager:
             content="Test notification",
             routing={"address": "user", "target": "user", "handler": "system"},
             user_id="user1",
+            event_metadata={},
         )
 
         success = await ws_manager.send_notification(event)

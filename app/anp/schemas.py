@@ -40,7 +40,7 @@ class NotificationCreate(BaseModel):
     deduplication_key: str | None = Field(
         default=None, description="Optional key for deduplication"
     )
-    metadata: dict | None = Field(default=None, description="Optional metadata dictionary")
+    metadata: dict = Field(default_factory=dict, description="Metadata dictionary")
     routing: RoutingFlags = Field(description="Routing flags for channel determination")
     agent_instructions: AgentInstructions | None = Field(
         default=None, description="Optional agent instructions"
@@ -60,7 +60,7 @@ class NotificationResponse(BaseModel):
     id: str
     content: str
     deduplication_key: str | None
-    metadata: dict | None
+    metadata: dict
     routing: RoutingFlags
     agent_instructions: AgentInstructions | None
     status: str

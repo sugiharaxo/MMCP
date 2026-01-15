@@ -5,7 +5,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.agent.session_manager import SessionManager as AgentSessionManager
@@ -15,6 +15,7 @@ from app.anp.notification_dispatcher import NotificationDispatcher
 from app.anp.watchdog import WatchdogService
 from app.api.routes import chat as chat_routes
 from app.api.routes import notifications as notifications_routes
+from app.api.routes import sessions as sessions_routes
 from app.api.routes import settings as settings_routes
 from app.core.auth import ensure_admin_token
 from app.core.config import user_settings
@@ -38,8 +39,8 @@ from app.services.prompt import PromptService
 from app.services.type_mapper import TypeMapper
 
 BASE_DIR = Path(__file__).parent
-STATIC_DIR = BASE_DIR / "static"
-STATIC_DIR.mkdir(exist_ok=True)
+STATIC_DIR = BASE_DIR / "app" / "static"
+STATIC_DIR.mkdir(exist_ok=True, parents=True)
 
 loader = PluginLoader(user_settings.plugin_dir)
 health_monitor = HealthMonitor()
@@ -65,8 +66,12 @@ agent_service = AgentService(
     notification_injector=notification_injector,
     prompt=prompt_service,
     session_manager=agent_session_manager,
+    event_bus=event_bus,
     health_monitor=health_monitor,
 )
+
+# Set up the Mediator pattern: EventBus triggers AgentService
+event_bus.set_agent_service(agent_service)
 
 
 @asynccontextmanager
@@ -215,6 +220,7 @@ async def general_exception_handler(_request: Request, exc: Exception) -> JSONRe
 app.include_router(chat_routes.router)
 app.include_router(settings_routes.router)
 app.include_router(notifications_routes.router)
+app.include_router(sessions_routes.router)
 
 
 @app.get("/api/v1/status")

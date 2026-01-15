@@ -69,11 +69,14 @@ class TestAgentNotificationInjector:
                 id="pending-1",
                 content="Action required: process file",
                 routing={"handler": "agent"},
+                event_metadata={},
             )
         ]
 
         recent_acks = [
-            EventLedger(id="ack-1", content="Download completed", routing={"handler": "system"})
+            EventLedger(
+                id="ack-1", content="Download completed", routing={"handler": "system"}, event_metadata={}
+            )
         ]
 
         formatted = injector.format_for_system_prompt(pending, recent_acks)

@@ -63,8 +63,14 @@ class SessionManager:
         """
         Load pending action from database for HITL resumption.
 
+        TEMPORARY LIMITATION: Only loads session-scoped actions from ChatSession.
+        TODO: Add load_pending_action_global() method for global-scope actions:
+        - Query EventLedger by approval_id when session_id is None
+        - Load from EventLedger.pending_action_data instead of ChatSession.pending_action
+        - Handle Address=USER escalated actions that have no session context
+
         Args:
-            session_id: Session ID to load
+            session_id: Session ID to load (required, but will support None for global actions)
 
         Returns:
             Pending action dictionary or None if not found

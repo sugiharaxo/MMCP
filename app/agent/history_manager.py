@@ -17,6 +17,7 @@ class HistoryMessage(BaseModel):
     type: Literal["final_response", "tool_call"] | None = None
     tool_result: bool | None = None
     tool_name: str | None = None
+    anp_event: bool | None = None
     size: int = Field(..., alias="_size")
 
     model_config = ConfigDict(populate_by_name=True)
@@ -41,7 +42,7 @@ class HistoryManager:
             logger.debug(f"Trimmed history: {current_chars}/{limit} chars remaining.")
 
     def _calculate_content_size(
-        self, content: str | dict[str, Any] | None, tool_name: str | None = None
+        self, content: str | dict[str, Any] | None, tool_name: str | None = None, anp_event: bool = False
     ) -> int:
         """Calculates char count as serialized by BAML."""
         if content is None:
@@ -58,7 +59,11 @@ class HistoryManager:
         else:
             base_size = len(str(content))
 
-        if tool_name:
+        if anp_event and tool_name:
+            # Manual overhead calculation for ANP events
+            # Template: <notification from="{{ msg.tool_name }}">{{ msg.content }}</notification>
+            base_size += len(f'<notification from="{tool_name}">') + len("</notification>")
+        elif tool_name:
             # Manual overhead calculation to match baml_src/main.baml template
             # Template line 102: <observation tool="{{ msg.tool_name }}">{{ msg.content }}</observation>
             # If the template format changes, this calculation must be updated accordingly
@@ -109,6 +114,19 @@ class HistoryManager:
                 content=result,
                 tool_result=True,
                 tool_name=tool_name,
+                _size=size,
+            )
+        )
+
+    def add_autonomous_observation(self, history: list[HistoryMessage], content: str, plugin_slug: str) -> None:
+        """Adds a Channel C event to history using the event:prefix."""
+        size = self._calculate_content_size(content, tool_name=f"event:{plugin_slug}", anp_event=True)
+        history.append(
+            HistoryMessage(
+                role="user",
+                content=content,
+                anp_event=True,
+                tool_name=f"event:{plugin_slug}",
                 _size=size,
             )
         )

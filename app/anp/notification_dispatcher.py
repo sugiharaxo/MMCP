@@ -90,10 +90,13 @@ class NotificationDispatcher:
             "session_id": event.session_id,
             "content": event.content,
             "routing": event.routing,
-            "metadata": event.event_metadata,
+            "metadata": event.event_metadata.copy(),  # Copy to avoid modifying original
             "owner_lease": event.owner_lease,
             "timestamp": event.created_at.isoformat() if event.created_at else None,
         }
+
+        # FIX: Data Leakage Protection - Remove internal protocol keys before sending to UI
+        payload["metadata"].pop("anp_turn_depth", None)
 
         try:
             await websocket.send_json(payload)

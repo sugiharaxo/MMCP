@@ -41,7 +41,7 @@ class EventLedger(Base):
     # Content fields
     content: Mapped[str] = mapped_column(Text, nullable=False)
     deduplication_key: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
-    event_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    event_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=lambda: {})
 
     # Routing flags (stored as JSON)
     routing: Mapped[dict] = mapped_column(JSON, nullable=False)
@@ -89,6 +89,9 @@ class ChatSession(Base):
 
     # Primary key (same as session_id)
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
+
+    # Custom title (nullable, falls back to first user message if not set)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Conversation history (stored as JSON)
     history: Mapped[list] = mapped_column(JSON, nullable=False, default=list)

@@ -7,6 +7,7 @@ It manages the iterative process of LLM reasoning and tool execution until a fin
 import asyncio
 import json
 import uuid
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from app.agent.history_manager import HistoryManager, HistoryMessage
@@ -18,6 +19,12 @@ from app.core.errors import AgentLogicError, ProviderError, map_provider_error
 from app.core.interfaces import LLMPrompt
 from app.core.logger import logger
 from app.services.prompt import ToolInfo
+from baml_client.stream_types import (
+    FinalResponse as StreamFinalResponse,
+)
+from baml_client.stream_types import (
+    ToolCall as StreamToolCall,
+)
 from baml_client.types import FinalResponse, ToolCall
 
 
@@ -75,12 +82,20 @@ class ReActLoop:
         context_data: dict[str, Any],
         history: list[HistoryMessage],
         step: int | None = None,
+        stream_callback: Callable[[Any], None] | None = None,
     ) -> FinalResponse | ToolCall:
         """
         Call LLM with consistent error handling.
 
         Note: This method converts history to dict list only for the API call.
         The original `history` list is not modified by this conversion.
+
+        Args:
+            tool_infos: Tool metadata for LLM
+            context_data: Context data for LLM
+            history: Conversation history
+            step: Optional step number for logging
+            stream_callback: Optional callback for streaming chunks (for ReAct loop continuation)
 
         Returns:
             FinalResponse | ToolCall from LLM
@@ -96,6 +111,7 @@ class ReActLoop:
                 user_input=None,  # No new user input, tool result is in history
                 history=HistoryManager.to_dict_list(history),  # Convert only for API transport
                 user_settings=self.user_settings,
+                stream_callback=stream_callback,
             )
         except (AgentLogicError, ProviderError) as llm_error:
             logger.error(
@@ -169,6 +185,7 @@ class ReActLoop:
         session_id: str,
         step: int,
         tool_infos: list[ToolInfo],
+        stream_callback: Callable[[StreamFinalResponse | StreamToolCall], None] | None = None,
     ) -> tuple[dict[str, Any] | None, FinalResponse | ToolCall | None]:
         """
         Handle a tool call: execute if INTERNAL, request approval if EXTERNAL.
@@ -276,6 +293,9 @@ class ReActLoop:
             tool_result = await self.execute_tool(tool, tool_args)
             tool_result_str = self.stringify_tool_result(tool_result)
 
+            # Log tool result with observation tags for developer visibility
+            logger.info(f'<observation tool="{tool_name}">{tool_result_str}</observation>')
+
             self.history_manager.add_tool_result(history, tool_name, tool_result_str)
             await self.session_manager.save_session(session_id, history)
             self.history_manager.trim_history(history, self.user_settings)
@@ -286,6 +306,7 @@ class ReActLoop:
                     context_data=context_data,
                     history=history,
                     step=step,
+                    stream_callback=stream_callback,
                 )
                 return (None, next_response)  # Continue loop with next response
             except Exception as llm_error:
@@ -297,6 +318,8 @@ class ReActLoop:
             # Handle tool timeout gracefully - add as observation for LLM to reason about
             logger.warning(f"Tool execution timed out for '{tool_name}': {timeout_error}")
             timeout_observation = str(timeout_error)
+            # Log timeout observation with tags for developer visibility
+            logger.info(f'<observation tool="{tool_name}">{timeout_observation}</observation>')
             self.history_manager.add_tool_result(history, tool_name, timeout_observation)
             await self.session_manager.save_session(session_id, history)
             self.history_manager.trim_history(history, self.user_settings)
@@ -307,6 +330,7 @@ class ReActLoop:
                     context_data=context_data,
                     history=history,
                     step=step,
+                    stream_callback=stream_callback,
                 )
                 return (None, next_response)  # Continue loop with next response
             except Exception as llm_error:
@@ -339,6 +363,7 @@ class ReActLoop:
         session_id: str,
         max_steps: int,
         tool_infos: list[ToolInfo],
+        stream_callback: Callable[[StreamFinalResponse | StreamToolCall], None] | None = None,
     ) -> dict[str, Any]:
         """
         Execute ReAct loop until FinalResponse or max steps reached.
@@ -354,6 +379,7 @@ class ReActLoop:
             session_id: Session identifier
             max_steps: Maximum ReAct loop iterations
             tool_infos: Tool metadata for LLM
+            stream_callback: Optional callback for streaming chunks (enables streaming in ReAct loop continuation)
 
         Returns:
             Response dict with result or error
@@ -380,7 +406,13 @@ class ReActLoop:
 
             if isinstance(current_response, ToolCall):
                 action_result, next_response = await self._handle_tool_call(
-                    current_response, context_data, history, session_id, step, tool_infos
+                    current_response,
+                    context_data,
+                    history,
+                    session_id,
+                    step,
+                    tool_infos,
+                    stream_callback,
                 )
                 if action_result is not None:
                     # Action needed (approval request or error)
@@ -435,6 +467,7 @@ class ReActLoop:
         session_id: str,
         max_steps: int,
         tool_infos: list[ToolInfo],
+        stream_callback: Callable[[StreamFinalResponse | StreamToolCall], None] | None = None,
     ) -> dict[str, Any]:
         """
         Resume the ReAct loop after a tool has been executed.
@@ -447,18 +480,19 @@ class ReActLoop:
             history: Current conversation history (including tool result)
             session_id: Session identifier
             max_steps: Maximum steps for the ReAct loop
+            tool_infos: Tool metadata for LLM
+            stream_callback: Optional callback for streaming chunks
 
         Returns:
             Response dict with result from continued agent loop
         """
-        # Use provided tool metadata
-
         # Call LLM to get next response after tool execution
         try:
             next_response = await self.call_llm_with_error_handling(
                 tool_infos=tool_infos,
                 context_data=context_data,
                 history=history,
+                stream_callback=stream_callback,
             )
         except Exception as llm_error:
             error_result = self.handle_llm_error(llm_error, history, session_id)
@@ -467,5 +501,11 @@ class ReActLoop:
 
         # Continue the ReAct loop
         return await self.execute(
-            next_response, context_data, history, session_id, max_steps, tool_infos
+            next_response,
+            context_data,
+            history,
+            session_id,
+            max_steps,
+            tool_infos,
+            stream_callback=stream_callback,
         )

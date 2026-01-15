@@ -5,7 +5,7 @@ Tests state machine transitions, deduplication, routing, lease-based fencing, an
 """
 
 import asyncio
-from unittest.mock import AsyncMock, Mock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -86,6 +86,7 @@ class TestEventBus:
             routing={"address": "user", "target": "user", "handler": "system"},
             status=EventStatus.PENDING,
             user_id="test_user",
+            event_metadata={},
         )
 
         # Mock database session
@@ -118,6 +119,7 @@ class TestEventBus:
             status=EventStatus.PENDING,
             session_id="active-session",
             user_id="test_user",
+            event_metadata={},
         )
 
         # Mock database session
@@ -149,6 +151,7 @@ class TestEventBus:
             routing={"address": "user", "target": "agent", "handler": "agent"},
             status=EventStatus.PENDING,
             user_id="test_user",
+            event_metadata={},
         )
 
         # Mock database session
@@ -184,6 +187,7 @@ class TestEventBus:
             status=EventStatus.PENDING,
             session_id="expired-session",
             user_id="test_user",
+            event_metadata={},
         )
 
         # Mock database session
@@ -235,6 +239,7 @@ class TestEventBus:
             routing={"address": "user", "target": "user", "handler": "system"},
             status=EventStatus.PENDING,
             owner_lease=1,
+            event_metadata={},
         )
 
         # Mock session to return existing event
@@ -277,6 +282,7 @@ class TestEventBus:
             routing={"address": "user", "target": "agent", "handler": "agent"},
             status=EventStatus.DISPATCHED,
             owner_lease=1,
+            event_metadata={},
         )
 
         # Mock session to return existing event and allow state transition
@@ -377,6 +383,7 @@ class TestEventBus:
             routing={"address": "user", "target": "agent", "handler": "agent"},
             status=EventStatus.DISPATCHED,
             owner_lease=1,
+            event_metadata={},
         )
 
         # Mock session
@@ -411,6 +418,7 @@ class TestEventBus:
             status=EventStatus.DISPATCHED,
             owner_lease=5,
             user_id="test_user",
+            event_metadata={},
         )
 
         # Mock session and database operations
@@ -451,6 +459,7 @@ class TestEventBus:
             owner_lease=3,
             session_id="test-session",
             user_id="test_user",
+            event_metadata={},
         )
 
         # Mock session
@@ -481,6 +490,7 @@ class TestEventBus:
             status=EventStatus.DISPATCHED,
             owner_lease=original_lease,
             user_id="test_user",
+            event_metadata={},
         )
 
         # Mock session
@@ -529,7 +539,7 @@ class TestEventBus:
     @pytest.mark.asyncio
     async def test_escalate_expired_events_with_expired(self, event_bus):
         """Test escalate_expired_events finds and escalates expired events."""
-        from datetime import datetime, timedelta, UTC
+        from datetime import UTC, datetime, timedelta
         from unittest.mock import MagicMock
 
         # Create expired event
@@ -541,6 +551,7 @@ class TestEventBus:
             owner_lease=1,
             delivery_deadline=datetime.now(UTC) - timedelta(minutes=5),  # Expired
             user_id="test_user",
+            event_metadata={},
         )
 
         # Mock database session
@@ -578,6 +589,7 @@ class TestEventBus:
             status=EventStatus.ESCALATED,
             owner_lease=2,  # Incremented during escalation
             user_id="test_user",
+            event_metadata={},
         )
 
         # Mock session
@@ -606,6 +618,7 @@ class TestEventBus:
             status=EventStatus.ESCALATED,
             owner_lease=3,
             user_id="test_user",
+            event_metadata={},
         )
 
         # Mock session
@@ -658,6 +671,7 @@ class TestEventBus:
                 routing={"address": "user", "target": "user", "handler": "system"},
                 status=EventStatus.PENDING,
                 user_id="test_user",
+                event_metadata={},
             )
 
             # Mock session manager
@@ -689,6 +703,7 @@ class TestEventBus:
             routing={"address": "user", "target": "user", "handler": "system"},
             status=EventStatus.PENDING,
             user_id="test_user",
+            event_metadata={},
         )
 
         # Mock session manager
@@ -722,6 +737,7 @@ class TestEventBus:
             routing={"address": "user", "target": "user", "handler": "system"},
             status=EventStatus.PENDING,
             user_id="test_user",
+            event_metadata={},
         )
 
         # Manually add event to queue
@@ -763,6 +779,7 @@ class TestEventBus:
                 routing={"address": "user", "target": "agent", "handler": "agent"},
                 status=EventStatus.PENDING,
                 user_id="test_user",
+                event_metadata={},
             )
 
             # Mock session manager

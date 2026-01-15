@@ -14,7 +14,7 @@ type ToolArgs = map<string, string>
 
 // Final response when the agent has a complete answer
 class FinalResponse {
-  thought string @description("Brief internal reasoning.")
+  thought string? @description("Brief internal reasoning.")
   answer string @description("The final message to the user.")
   //acknowledged_ids string[]?
   @@dynamic
@@ -22,7 +22,7 @@ class FinalResponse {
 
 // Tool call when the agent wants to execute a tool
 class ToolCall {
-  thought string @description("Brief internal reasoning.")
+  thought string? @description("Brief internal reasoning.")
   tool_name string @description("Name of the tool to call.")
   // The TypeBuilder ensures the LLM knows what goes inside here.
   args ToolArgs @description("Arguments for the tool call.")
@@ -67,6 +67,7 @@ function UniversalAgent(
 	- Do not utilize conversational filler.
 	- Be concise and deterministic.
 	- If a tool fails, explain why to the user.
+	- Messages in `<notification>` tags are asynchronous system events. You did not trigger these; they are provided for your awareness so you can respond proactively if needed.
 
 	{% if tools %}
 	### TOOLS
@@ -100,6 +101,9 @@ function UniversalAgent(
 	{% if msg.tool_result %}
 	{{ _.role("user") }}
 	<observation tool="{{ msg.tool_name }}">{{ msg.content }}</observation>
+	{% elif msg.anp_event %}
+	{{ _.role("user") }}
+	<notification from="{{ msg.tool_name }}">{{ msg.content }}</notification>
 	{% elif merge_system and loop.first and msg.role == "user" %}
 
 	user: {{ msg.content }}
