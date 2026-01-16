@@ -147,7 +147,7 @@ export default function ChatView() {
           }}
         >
           <ScrollArea
-            class="flex-1 px-4 sm:px-8 pb-24 pt-6"
+            class="flex-1 px-4 sm:px-8 pb-30 pt-6"
             ref={(el) => (scrollEl = el)}
           >
             <div class="mx-auto w-full max-w-3xl space-y-3">
