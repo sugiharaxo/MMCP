@@ -204,7 +204,6 @@ export default function ChatView() {
                                       handleCopyMessage(msg.id, msg.content)
                                     }
                                     class="text-xs opacity-60 hover:opacity-100"
-                                    title="Copy message"
                                   >
                                     <Show
                                       when={copiedMessageIds().has(msg.id)}

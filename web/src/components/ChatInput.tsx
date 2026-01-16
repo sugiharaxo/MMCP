@@ -67,7 +67,6 @@ export default function ChatInput(props: ChatInputProps) {
         disabled={isSendDisabled()}
         class="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center w-9 h-9 text-zinc-400 disabled:opacity-30 transition-colors cursor-pointer disabled:cursor-default"
         classList={{ "hover:text-zinc-100": !isSendDisabled() }}
-        title="Send message"
       >
         <svg
           class="w-5 h-5"

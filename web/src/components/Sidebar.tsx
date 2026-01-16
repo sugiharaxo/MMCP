@@ -205,7 +205,6 @@ export default function Sidebar(props: SidebarProps) {
         <StealthButton
           onClick={props.onToggle}
           class="self-start h-[36px] flex items-center justify-center"
-          title={props.isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
         >
           <Show
             when={props.isCollapsed}
@@ -241,7 +240,6 @@ export default function Sidebar(props: SidebarProps) {
         <StealthButton
           onClick={handleNewChat}
           class="flex items-center gap-2 self-start h-[36px]"
-          title="New chat"
         >
           <svg
             class="w-5 h-5 flex-shrink-0"
@@ -339,7 +337,6 @@ export default function Sidebar(props: SidebarProps) {
                               }
                             }}
                             class="p-0 text-zinc-400 hover:text-zinc-100 transition-colors relative z-10 cursor-pointer"
-                            title="Session options"
                           >
                             <svg
                               class="w-5 h-5"
