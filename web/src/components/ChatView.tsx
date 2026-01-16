@@ -1,4 +1,11 @@
-import { onMount, onCleanup, For, Show, createEffect } from "solid-js";
+import {
+  onMount,
+  onCleanup,
+  For,
+  Show,
+  createEffect,
+  createSignal,
+} from "solid-js";
 import { sessionManager } from "../lib/sessionManager";
 import { chatState } from "../lib/chatState";
 import { messageStore } from "../lib/messageStore";
@@ -8,11 +15,16 @@ import { ActionCard } from "./ActionCard";
 import ChatInput from "./ChatInput";
 import ScrollArea from "./ScrollArea";
 import MarkdownRenderer from "./MarkdownRenderer";
+import StealthButton from "./StealthButton";
 
 export default function ChatView() {
   const currentSessionId = () => sessionManager.currentSessionId();
   let scrollEl: HTMLDivElement | undefined;
   let previousMessageCount = 0;
+  const [copiedMessageIds, setCopiedMessageIds] = createSignal(
+    new Set<string>()
+  );
+  const copyTimeouts = new Map<string, number>();
 
   onMount(() => {
     // Initialize side-effectful singletons once the view is mounted
@@ -22,6 +34,8 @@ export default function ChatView() {
 
   onCleanup(() => {
     notificationManager.cleanup();
+    copyTimeouts.forEach((timeout) => clearTimeout(timeout));
+    copyTimeouts.clear();
   });
 
   // Auto-scroll to bottom when messages change
@@ -73,6 +87,26 @@ export default function ChatView() {
 
   const handleActionResolve = async (approved: boolean) => {
     await chatController.resolveAction(approved);
+  };
+
+  const handleCopyMessage = async (messageId: string, content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedMessageIds((prev) => new Set(prev).add(messageId));
+      const existingTimeout = copyTimeouts.get(messageId);
+      if (existingTimeout) clearTimeout(existingTimeout);
+      const timeout = setTimeout(() => {
+        setCopiedMessageIds((prev) => {
+          const next = new Set(prev);
+          next.delete(messageId);
+          return next;
+        });
+        copyTimeouts.delete(messageId);
+      }, 3000);
+      copyTimeouts.set(messageId, timeout);
+    } catch (error) {
+      console.error("Failed to copy message:", error);
+    }
   };
 
   /**
@@ -143,7 +177,7 @@ export default function ChatView() {
                       <div
                         class={
                           isUser
-                            ? "inline-block max-w-full md:max-w-[70%] rounded-2xl px-4 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-secondary)] text-[var(--color-primary-highlight)] shadow-sm text-[15px] text-left"
+                            ? "inline-block max-w-full md:max-w-[70%] rounded-tl-2xl rounded-tr-2xl rounded-bl-2xl rounded-br-lg px-4 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-secondary)] text-[var(--color-primary-highlight)] shadow-sm text-[15px] text-left"
                             : isAgent
                             ? "w-full px-1 sm:px-2 text-[15px] text-[var(--color-primary)] text-left"
                             : "inline-block max-w-full rounded-md px-3 py-2 bg-[var(--bg-secondary)] border border-[var(--border-secondary)] text-[var(--color-primary)] text-xs text-left"
@@ -158,10 +192,70 @@ export default function ChatView() {
                         <Show
                           when={isUser}
                           fallback={
-                            <MarkdownRenderer
-                              content={msg.content}
-                              class={isAgent ? "mmcp-markdown" : ""}
-                            />
+                            <>
+                              <MarkdownRenderer
+                                content={msg.content}
+                                class={isAgent ? "mmcp-markdown" : ""}
+                              />
+                              <Show when={isAgent}>
+                                <div class="mt-2 flex justify-start pl-2 py-1">
+                                  <StealthButton
+                                    onClick={() =>
+                                      handleCopyMessage(msg.id, msg.content)
+                                    }
+                                    class="text-xs opacity-60 hover:opacity-100"
+                                    title="Copy message"
+                                  >
+                                    <Show
+                                      when={copiedMessageIds().has(msg.id)}
+                                      fallback={
+                                        <svg
+                                          class="w-4.5 h-4.5 transform scale-x-[-1]"
+                                          fill="none"
+                                          stroke="currentColor"
+                                          viewBox="0 0 512 512"
+                                        >
+                                          <rect
+                                            width="336"
+                                            height="336"
+                                            x="128"
+                                            y="128"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            stroke-linejoin="round"
+                                            stroke-width="32"
+                                            rx="57"
+                                            ry="57"
+                                          />
+                                          <path
+                                            fill="none"
+                                            stroke="currentColor"
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            stroke-width="32"
+                                            d="m383.5 128 .5-24a56.16 56.16 0 0 0-56-56H112a64.19 64.19 0 0 0-64 64v216a56.16 56.16 0 0 0 56 56h24"
+                                          />
+                                        </svg>
+                                      }
+                                    >
+                                      <svg
+                                        class="w-4.5 h-4.5"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                      >
+                                        <path
+                                          stroke-linecap="round"
+                                          stroke-linejoin="round"
+                                          stroke-width="2"
+                                          d="M5 13l4 4L19 7"
+                                        />
+                                      </svg>
+                                    </Show>
+                                  </StealthButton>
+                                </div>
+                              </Show>
+                            </>
                           }
                         >
                           <div class="whitespace-pre-wrap break-words">
@@ -215,7 +309,7 @@ export default function ChatView() {
 
         {/* Single canonical ChatInput – lerped between center and footer */}
         <div
-          class="absolute left-0 right-0 transition-all duration-200 ease-out"
+          class="absolute left-0 right-0 p-8 flex justify-center transition-all duration-200 ease-out pointer-events-none"
           style={{
             top: hasActiveConversation() ? "auto" : "50%",
             bottom: hasActiveConversation() ? "0" : "auto",
@@ -224,14 +318,13 @@ export default function ChatView() {
               : "translateY(-50%)",
           }}
         >
-          <div class="p-8 flex justify-center w-full">
-            <ChatInput
-              onSend={handleSend}
-              disabled={
-                chatState.isBusy() || messageStore.pendingAction() !== null
-              }
-            />
-          </div>
+          <ChatInput
+            onSend={handleSend}
+            disabled={
+              chatState.isBusy() || messageStore.pendingAction() !== null
+            }
+            placeholder={hasActiveConversation() ? "" : "Talk to MMCP"}
+          />
         </div>
       </div>
     </div>

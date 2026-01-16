@@ -50,16 +50,16 @@ export default function ChatInput(props: ChatInputProps) {
   });
 
   return (
-    <div class="relative w-full max-w-2xl">
+    <div class="relative w-full max-w-2xl pointer-events-auto">
       <textarea
         ref={textareaRef}
         value={input()}
         onInput={handleInput}
         onKeyPress={handleKeyPress}
-        placeholder={props.placeholder || "Talk to MMCP"}
+        placeholder={props.placeholder || ""}
         disabled={props.disabled}
         rows={1}
-        class="w-full bg-[var(--bg-secondary)] border border-[var(--border-primary)] rounded-lg px-4 py-3 pr-12 focus:outline-none disabled:cursor-not-allowed text-zinc-100 placeholder-zinc-500 resize-none overflow-hidden break-words"
+        class="w-full bg-[var(--bg-secondary)] border border-[var(--border-primary)] rounded-2xl px-4 py-3 pr-12 focus:outline-none disabled:cursor-not-allowed text-zinc-100 placeholder-zinc-500 resize-none overflow-hidden break-words"
         style="min-height: 48px; max-height: 200px;"
       />
       <button
