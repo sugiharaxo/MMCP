@@ -259,16 +259,16 @@ class ReActLoop:
                 tool_call_id=tool_call_id,
             )
 
-            pending_action = {
+            # Add action request to history as a message
+            action_data = {
                 "approval_id": approval_id,
                 "tool_name": tool_name,
                 "tool_args": tool_args,
                 "tool_call_id": tool_call_id,
                 "explanation": hitl_rationale,
             }
-            await self.session_manager.save_session_with_pending_action(
-                session_id, history, pending_action
-            )
+            self.history_manager.add_action_request(history, action_data)
+            await self.session_manager.save_session(session_id, history)
 
             logger.info(
                 f"EXTERNAL tool '{tool_name}' requires approval (approval_id: {approval_id})"

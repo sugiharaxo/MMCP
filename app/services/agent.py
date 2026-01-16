@@ -614,20 +614,30 @@ class AgentService:
             f"decision={decision}"
         )
 
-        # Load pending action from database
-        pending_action = await self.session_manager.load_pending_action(session_id)
-        if not pending_action or pending_action.get("approval_id") != approval_id:
-            raise StaleApprovalError(
-                f"Pending action with approval_id {approval_id} not found or mismatch"
-            )
-
         # Load session history (already converted to HistoryMessage)
         history = await self.session_manager.load_session(session_id)
 
-        async def _resume_under_lock() -> dict[str, Any]:
-            tool_name = pending_action["tool_name"]
-            tool_args = pending_action["tool_args"]
+        # Find and mark the action_request as resolved in history
+        status = "approved" if was_approved else "denied"
+        action_request_msg = self.history_manager.resolve_action_request(
+            history, approval_id, status
+        )
+        if not action_request_msg:
+            raise StaleApprovalError(
+                f"Action request with approval_id {approval_id} not found in history"
+            )
 
+        # Extract action data from the message
+        action_data = action_request_msg.content
+        if isinstance(action_data, dict):
+            tool_name = action_data.get("tool_name")
+            tool_args = action_data.get("tool_args", {})
+        else:
+            raise StaleApprovalError(
+                f"Invalid action request data format for approval_id {approval_id}"
+            )
+
+        async def _resume_under_lock() -> dict[str, Any]:
             if not was_approved:
                 # User denied: Add denial message and return
                 denial_msg = f"User denied execution of tool '{tool_name}'"
@@ -733,15 +743,28 @@ class AgentService:
             f"decision={decision}"
         )
 
-        # Load pending action from database
-        pending_action = await self.session_manager.load_pending_action(session_id)
-        if not pending_action or pending_action.get("approval_id") != approval_id:
-            raise StaleApprovalError(
-                f"Pending action with approval_id {approval_id} not found or mismatch"
-            )
-
         # Load session history (already converted to HistoryMessage)
         history = await self.session_manager.load_session(session_id)
+
+        # Find and mark the action_request as resolved in history
+        status = "approved" if was_approved else "denied"
+        action_request_msg = self.history_manager.resolve_action_request(
+            history, approval_id, status
+        )
+        if not action_request_msg:
+            raise StaleApprovalError(
+                f"Action request with approval_id {approval_id} not found in history"
+            )
+
+        # Extract action data from the message
+        action_data = action_request_msg.content
+        if isinstance(action_data, dict):
+            tool_name = action_data.get("tool_name")
+            tool_args = action_data.get("tool_args", {})
+        else:
+            raise StaleApprovalError(
+                f"Invalid action request data format for approval_id {approval_id}"
+            )
 
         lock = self.lock_manager.get_lock(session_id)
         # Type-safe: holds raw Pydantic models from BAML
@@ -750,9 +773,6 @@ class AgentService:
         try:
             async with asyncio.timeout(self.user_settings.session_lock_timeout_seconds):
                 async with lock:
-                    tool_name = pending_action["tool_name"]
-                    tool_args = pending_action["tool_args"]
-
                     if not was_approved:
                         # User denied: Add denial message and return
                         denial_msg = f"User denied execution of tool '{tool_name}'"

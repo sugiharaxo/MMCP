@@ -62,30 +62,37 @@ export class ChatController {
   /**
    * Resolve a pending action (approve/deny)
    */
-  async resolveAction(approved: boolean): Promise<void> {
-    const action = messageStore.pendingAction();
-    if (!action || !action.approval_id) return;
+  async resolveAction(approved: boolean, approvalId: string): Promise<void> {
+    // Find the action request message by approval_id
+    const messages = messageStore.messages();
+    const actionMsg = messages.find(
+      (msg) => msg.type === "action_request" && msg.approval_id === approvalId
+    );
+
+    if (!actionMsg || !actionMsg.approval_id) {
+      console.warn(`Action request with approval_id ${approvalId} not found`);
+      return;
+    }
+
+    // Mark the action as resolved immediately in the UI
+    const status = approved ? "approved" : "denied";
+    messageStore.updateMessage(actionMsg.id, { action_status: status });
 
     const decision = approved ? "approve" : "deny";
-    const actionSessionId =
-      action.session_id || sessionManager.currentSessionId();
+    const actionSessionId = sessionManager.currentSessionId();
 
     // TODO: Handle global-scope actions (session_id = null)
     if (!actionSessionId) {
       console.warn("Global-scope action resolution not yet implemented");
-      messageStore.setPendingActionData(null);
       return;
     }
-
-    // Clear pending action
-    messageStore.setPendingActionData(null);
 
     try {
       // Stream the response
       const agentMsgId = crypto.randomUUID();
       for await (const chunk of respondToActionStream(
         actionSessionId,
-        action.approval_id,
+        approvalId,
         decision
       )) {
         this.handleStreamChunk(chunk, agentMsgId);
@@ -99,9 +106,23 @@ export class ChatController {
     }
   }
 
-  private handleStreamChunk(chunk: ChatResponse, _agentMsgId: string): void {
+  private handleStreamChunk(chunk: ChatResponse, agentMsgId: string): void {
     if (chunk.type === "action_request") {
-      messageStore.setPendingActionData(chunk);
+      // Add action request as a message in the chat flow
+      messageStore.addMessage({
+        id: agentMsgId,
+        sender: "agent",
+        content:
+          chunk.explanation || chunk.response || "Action requires approval",
+        handler: "agent",
+        isPersistent: false,
+        type: "action_request",
+        approval_id: chunk.approval_id,
+        tool_name: chunk.tool_name,
+        tool_args: chunk.tool_args,
+        explanation: chunk.explanation,
+        action_status: "pending",
+      });
       messageStore.clearStreamingContent();
       // Action cards are user-visible; stop "Thinking..." once we reach this stage.
       messageStore.setIsThinking(false);

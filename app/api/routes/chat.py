@@ -230,14 +230,23 @@ async def get_chat_history(
             sender = _determine_sender(msg)
             handler = _determine_handler(msg)
 
-            messages.append(
-                {
-                    "id": str(uuid.uuid4()),  # Generate ID for frontend
-                    "sender": sender,
-                    "content": content,
-                    "handler": handler,
-                }
-            )
+            message_data = {
+                "id": str(uuid.uuid4()),  # Generate ID for frontend
+                "sender": sender,
+                "content": content,
+                "handler": handler,
+            }
+
+            # Include action_request data if this is an action request
+            if msg.type == "action_request" and isinstance(msg.content, dict):
+                message_data["type"] = "action_request"
+                message_data["approval_id"] = msg.approval_id
+                message_data["tool_name"] = msg.content.get("tool_name")
+                message_data["tool_args"] = msg.content.get("tool_args", {})
+                message_data["explanation"] = msg.content.get("explanation", "")
+                message_data["action_status"] = msg.action_status or "pending"
+
+            messages.append(message_data)
 
         logger.debug(f"Fetched history for session {session_id}: {len(messages)} messages")
         return {"messages": messages}

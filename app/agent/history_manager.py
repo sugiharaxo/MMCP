@@ -14,10 +14,12 @@ class HistoryMessage(BaseModel):
 
     role: Literal["user", "assistant", "system"]
     content: str | dict[str, Any]
-    type: Literal["final_response", "tool_call"] | None = None
+    type: Literal["final_response", "tool_call", "action_request"] | None = None
     tool_result: bool | None = None
     tool_name: str | None = None
     anp_event: bool | None = None
+    approval_id: str | None = None  # For action_request messages
+    action_status: Literal["pending", "approved", "denied"] | None = None  # For action_request messages
     size: int = Field(..., alias="_size")
 
     model_config = ConfigDict(populate_by_name=True)
@@ -42,7 +44,10 @@ class HistoryManager:
             logger.debug(f"Trimmed history: {current_chars}/{limit} chars remaining.")
 
     def _calculate_content_size(
-        self, content: str | dict[str, Any] | None, tool_name: str | None = None, anp_event: bool = False
+        self,
+        content: str | dict[str, Any] | None,
+        tool_name: str | None = None,
+        anp_event: bool = False,
     ) -> int:
         """Calculates char count as serialized by BAML."""
         if content is None:
@@ -118,9 +123,13 @@ class HistoryManager:
             )
         )
 
-    def add_autonomous_observation(self, history: list[HistoryMessage], content: str, plugin_slug: str) -> None:
+    def add_autonomous_observation(
+        self, history: list[HistoryMessage], content: str, plugin_slug: str
+    ) -> None:
         """Adds a Channel C event to history using the event:prefix."""
-        size = self._calculate_content_size(content, tool_name=f"event:{plugin_slug}", anp_event=True)
+        size = self._calculate_content_size(
+            content, tool_name=f"event:{plugin_slug}", anp_event=True
+        )
         history.append(
             HistoryMessage(
                 role="user",
@@ -136,6 +145,42 @@ class HistoryManager:
         content = f"Error: {error_message} Please provide a valid response."
         size = self._calculate_content_size(content)
         history.append(HistoryMessage(role="assistant", content=content, _size=size))
+
+    def add_action_request(
+        self,
+        history: list[HistoryMessage],
+        action_data: dict[str, Any],
+    ) -> None:
+        """Add action request to history for HITL approval."""
+        # action_data contains: approval_id, tool_name, tool_args, explanation
+        size = self._calculate_content_size(action_data)
+        history.append(
+            HistoryMessage(
+                role="assistant",
+                type="action_request",
+                content=action_data,
+                tool_name=action_data.get("tool_name"),
+                approval_id=action_data.get("approval_id"),
+                action_status="pending",
+                _size=size,
+            )
+        )
+
+    def resolve_action_request(
+        self,
+        history: list[HistoryMessage],
+        approval_id: str,
+        status: Literal["approved", "denied"],
+    ) -> HistoryMessage | None:
+        """
+        Find and mark an action_request message as resolved by approval_id.
+        Returns the updated message if found, None otherwise.
+        """
+        for msg in history:
+            if msg.type == "action_request" and msg.approval_id == approval_id:
+                msg.action_status = status
+                return msg
+        return None
 
     @staticmethod
     def to_dict_list(history: list[HistoryMessage]) -> list[dict[str, Any]]:

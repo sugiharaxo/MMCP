@@ -44,7 +44,7 @@ export default function ChatView() {
     const sessionId = currentSessionId();
     const messages = messageStore.messages();
     const streaming = messageStore.streamingContent();
-    const action = messageStore.pendingAction();
+    const hasAction = messages.some((msg) => msg.type === "action_request");
 
     const el = scrollEl;
     if (!el) return;
@@ -71,7 +71,7 @@ export default function ChatView() {
     if (distanceFromBottom > threshold) return;
 
     // For new messages / streaming / actions while user is at bottom, smooth-scroll
-    if (hasMessages || streaming || action) {
+    if (hasMessages || streaming || hasAction) {
       setTimeout(() => {
         if (!scrollEl) return;
         // Use a direct jump; no smooth animation to avoid visible scroll
@@ -86,8 +86,8 @@ export default function ChatView() {
     await chatController.sendMessage(text);
   };
 
-  const handleActionResolve = async (approved: boolean) => {
-    await chatController.resolveAction(approved);
+  const handleActionResolve = async (approved: boolean, approvalId: string) => {
+    await chatController.resolveAction(approved, approvalId);
   };
 
   const handleCopyMessage = async (messageId: string, content: string) => {
@@ -126,11 +126,12 @@ export default function ChatView() {
    */
   const hasActiveConversation = () => {
     const id = currentSessionId();
-    const hasMessages = messageStore.messages().length > 0;
+    const messages = messageStore.messages();
+    const hasMessages = messages.length > 0;
     const hasStreaming = !!messageStore.streamingContent();
-    const hasPendingAction = !!messageStore.pendingAction();
+    const hasAction = messages.some((msg) => msg.type === "action_request");
 
-    return !!id || hasMessages || hasStreaming || hasPendingAction;
+    return !!id || hasMessages || hasStreaming || hasAction;
   };
 
   return (
@@ -191,85 +192,106 @@ export default function ChatView() {
                         </Show>
 
                         <Show
-                          when={isUser}
+                          when={msg.type === "action_request"}
                           fallback={
-                            <>
-                              <MarkdownRenderer
-                                content={msg.content}
-                                class={isAgent ? "mmcp-markdown" : ""}
-                              />
-                              <Show when={isAgent}>
-                                <div class="mt-2 flex justify-start pl-2 py-1">
-                                  <StealthTooltip
-                                    text={
-                                      copiedMessageIds().has(msg.id)
-                                        ? "Copied"
-                                        : "Copy"
-                                    }
-                                    position="bottom"
-                                  >
-                                    <StealthButton
-                                      onClick={() =>
-                                        handleCopyMessage(msg.id, msg.content)
-                                      }
-                                      class="text-xs opacity-60 hover:opacity-100"
-                                    >
-                                      <Show
-                                        when={copiedMessageIds().has(msg.id)}
-                                        fallback={
-                                          <svg
-                                            class="w-4.5 h-4.5 transform scale-x-[-1]"
-                                            fill="none"
-                                            stroke="currentColor"
-                                            viewBox="0 0 512 512"
-                                          >
-                                            <rect
-                                              width="336"
-                                              height="336"
-                                              x="128"
-                                              y="128"
-                                              fill="none"
-                                              stroke="currentColor"
-                                              stroke-linejoin="round"
-                                              stroke-width="32"
-                                              rx="57"
-                                              ry="57"
-                                            />
-                                            <path
-                                              fill="none"
-                                              stroke="currentColor"
-                                              stroke-linecap="round"
-                                              stroke-linejoin="round"
-                                              stroke-width="32"
-                                              d="m383.5 128 .5-24a56.16 56.16 0 0 0-56-56H112a64.19 64.19 0 0 0-64 64v216a56.16 56.16 0 0 0 56 56h24"
-                                            />
-                                          </svg>
+                            <Show
+                              when={isUser}
+                              fallback={
+                                <>
+                                  <MarkdownRenderer
+                                    content={msg.content}
+                                    class={isAgent ? "mmcp-markdown" : ""}
+                                  />
+                                  <Show when={isAgent}>
+                                    <div class="mt-2 flex justify-start pl-2 py-1">
+                                      <StealthTooltip
+                                        text={
+                                          copiedMessageIds().has(msg.id)
+                                            ? "Copied"
+                                            : "Copy"
                                         }
+                                        position="bottom"
                                       >
-                                        <svg
-                                          class="w-4.5 h-4.5"
-                                          fill="none"
-                                          stroke="currentColor"
-                                          viewBox="0 0 24 24"
+                                        <StealthButton
+                                          onClick={() =>
+                                            handleCopyMessage(
+                                              msg.id,
+                                              msg.content
+                                            )
+                                          }
+                                          class="text-xs opacity-60 hover:opacity-100"
                                         >
-                                          <path
-                                            stroke-linecap="round"
-                                            stroke-linejoin="round"
-                                            stroke-width="2"
-                                            d="M5 13l4 4L19 7"
-                                          />
-                                        </svg>
-                                      </Show>
-                                    </StealthButton>
-                                  </StealthTooltip>
-                                </div>
-                              </Show>
-                            </>
+                                          <Show
+                                            when={copiedMessageIds().has(
+                                              msg.id
+                                            )}
+                                            fallback={
+                                              <svg
+                                                class="w-4.5 h-4.5 transform scale-x-[-1]"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                viewBox="0 0 512 512"
+                                              >
+                                                <rect
+                                                  width="336"
+                                                  height="336"
+                                                  x="128"
+                                                  y="128"
+                                                  fill="none"
+                                                  stroke="currentColor"
+                                                  stroke-linejoin="round"
+                                                  stroke-width="32"
+                                                  rx="57"
+                                                  ry="57"
+                                                />
+                                                <path
+                                                  fill="none"
+                                                  stroke="currentColor"
+                                                  stroke-linecap="round"
+                                                  stroke-linejoin="round"
+                                                  stroke-width="32"
+                                                  d="m383.5 128 .5-24a56.16 56.16 0 0 0-56-56H112a64.19 64.19 0 0 0-64 64v216a56.16 56.16 0 0 0 56 56h24"
+                                                />
+                                              </svg>
+                                            }
+                                          >
+                                            <svg
+                                              class="w-4.5 h-4.5"
+                                              fill="none"
+                                              stroke="currentColor"
+                                              viewBox="0 0 24 24"
+                                            >
+                                              <path
+                                                stroke-linecap="round"
+                                                stroke-linejoin="round"
+                                                stroke-width="2"
+                                                d="M5 13l4 4L19 7"
+                                              />
+                                            </svg>
+                                          </Show>
+                                        </StealthButton>
+                                      </StealthTooltip>
+                                    </div>
+                                  </Show>
+                                </>
+                              }
+                            >
+                              <div class="whitespace-pre-wrap break-words">
+                                {msg.content}
+                              </div>
+                            </Show>
                           }
                         >
-                          <div class="whitespace-pre-wrap break-words">
-                            {msg.content}
-                          </div>
+                          <ActionCard
+                            toolName={msg.tool_name || "unknown"}
+                            toolArgs={msg.tool_args || {}}
+                            approvalId={msg.approval_id || ""}
+                            explanation={
+                              msg.explanation || "No explanation provided"
+                            }
+                            status={msg.action_status}
+                            onResolve={handleActionResolve}
+                          />
                         </Show>
                       </div>
                     </div>
@@ -298,22 +320,6 @@ export default function ChatView() {
               </Show>
             </div>
           </ScrollArea>
-
-          <Show when={messageStore.pendingAction()}>
-            {(action) => (
-              <div class="px-8 pb-4">
-                <ActionCard
-                  toolName={action().tool_name || "unknown"}
-                  toolArgs={action().tool_args || {}}
-                  approvalId={action().approval_id || ""}
-                  explanation={
-                    action().explanation || "No explanation provided"
-                  }
-                  onResolve={handleActionResolve}
-                />
-              </div>
-            )}
-          </Show>
         </div>
 
         {/* Single canonical ChatInput – lerped between center and footer */}
@@ -330,7 +336,10 @@ export default function ChatView() {
           <ChatInput
             onSend={handleSend}
             disabled={
-              chatState.isBusy() || messageStore.pendingAction() !== null
+              chatState.isBusy() ||
+              messageStore
+                .messages()
+                .some((msg) => msg.type === "action_request" && (!msg.action_status || msg.action_status === "pending"))
             }
             placeholder={hasActiveConversation() ? "" : "Talk to MMCP"}
           />

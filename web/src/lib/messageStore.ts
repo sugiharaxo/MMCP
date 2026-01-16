@@ -6,6 +6,13 @@ export interface DisplayMessage {
   content: string;
   handler?: "system" | "agent";
   isPersistent?: boolean; // True for messages from history/API that should be ACKed
+  // Action request fields (when type === "action_request")
+  type?: "action_request";
+  approval_id?: string;
+  tool_name?: string;
+  tool_args?: Record<string, any>;
+  explanation?: string;
+  action_status?: "pending" | "approved" | "denied";
 }
 
 export interface ChatResponse {
@@ -43,6 +50,12 @@ function createMessageStore() {
     setMessages(newMessages);
   };
 
+  const updateMessage = (messageId: string, updates: Partial<DisplayMessage>) => {
+    setMessages((prev) =>
+      prev.map((msg) => (msg.id === messageId ? { ...msg, ...updates } : msg))
+    );
+  };
+
   // Actions for managing streaming
   const updateStreamingContent = (content: string) => {
     setStreamingContent(content);
@@ -74,6 +87,7 @@ function createMessageStore() {
     addMessage,
     clearMessages,
     setMessagesList,
+    updateMessage,
     updateStreamingContent,
     clearStreamingContent,
     setPendingActionData,

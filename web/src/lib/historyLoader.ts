@@ -31,6 +31,13 @@ export class HistoryLoader {
         content: msg.content,
         handler: msg.handler,
         isPersistent: true, // Messages from history should be ACKed if they're notifications
+        // Copy action_request fields if present
+        ...(msg.type && { type: msg.type }),
+        ...(msg.approval_id && { approval_id: msg.approval_id }),
+        ...(msg.tool_name && { tool_name: msg.tool_name }),
+        ...(msg.tool_args && { tool_args: msg.tool_args }),
+        ...(msg.explanation && { explanation: msg.explanation }),
+        ...(msg.action_status && { action_status: msg.action_status }),
       }));
 
       return historyMessages;
