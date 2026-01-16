@@ -16,6 +16,7 @@ import ChatInput from "./ChatInput";
 import ScrollArea from "./ScrollArea";
 import MarkdownRenderer from "./MarkdownRenderer";
 import StealthButton from "./StealthButton";
+import StealthTooltip from "./StealthTooltip";
 
 export default function ChatView() {
   const currentSessionId = () => sessionManager.currentSessionId();
@@ -199,59 +200,68 @@ export default function ChatView() {
                               />
                               <Show when={isAgent}>
                                 <div class="mt-2 flex justify-start pl-2 py-1">
-                                  <StealthButton
-                                    onClick={() =>
-                                      handleCopyMessage(msg.id, msg.content)
+                                  <StealthTooltip
+                                    text={
+                                      copiedMessageIds().has(msg.id)
+                                        ? "Copied"
+                                        : "Copy"
                                     }
-                                    class="text-xs opacity-60 hover:opacity-100"
+                                    position="bottom"
                                   >
-                                    <Show
-                                      when={copiedMessageIds().has(msg.id)}
-                                      fallback={
+                                    <StealthButton
+                                      onClick={() =>
+                                        handleCopyMessage(msg.id, msg.content)
+                                      }
+                                      class="text-xs opacity-60 hover:opacity-100"
+                                    >
+                                      <Show
+                                        when={copiedMessageIds().has(msg.id)}
+                                        fallback={
+                                          <svg
+                                            class="w-4.5 h-4.5 transform scale-x-[-1]"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            viewBox="0 0 512 512"
+                                          >
+                                            <rect
+                                              width="336"
+                                              height="336"
+                                              x="128"
+                                              y="128"
+                                              fill="none"
+                                              stroke="currentColor"
+                                              stroke-linejoin="round"
+                                              stroke-width="32"
+                                              rx="57"
+                                              ry="57"
+                                            />
+                                            <path
+                                              fill="none"
+                                              stroke="currentColor"
+                                              stroke-linecap="round"
+                                              stroke-linejoin="round"
+                                              stroke-width="32"
+                                              d="m383.5 128 .5-24a56.16 56.16 0 0 0-56-56H112a64.19 64.19 0 0 0-64 64v216a56.16 56.16 0 0 0 56 56h24"
+                                            />
+                                          </svg>
+                                        }
+                                      >
                                         <svg
-                                          class="w-4.5 h-4.5 transform scale-x-[-1]"
+                                          class="w-4.5 h-4.5"
                                           fill="none"
                                           stroke="currentColor"
-                                          viewBox="0 0 512 512"
+                                          viewBox="0 0 24 24"
                                         >
-                                          <rect
-                                            width="336"
-                                            height="336"
-                                            x="128"
-                                            y="128"
-                                            fill="none"
-                                            stroke="currentColor"
-                                            stroke-linejoin="round"
-                                            stroke-width="32"
-                                            rx="57"
-                                            ry="57"
-                                          />
                                           <path
-                                            fill="none"
-                                            stroke="currentColor"
                                             stroke-linecap="round"
                                             stroke-linejoin="round"
-                                            stroke-width="32"
-                                            d="m383.5 128 .5-24a56.16 56.16 0 0 0-56-56H112a64.19 64.19 0 0 0-64 64v216a56.16 56.16 0 0 0 56 56h24"
+                                            stroke-width="2"
+                                            d="M5 13l4 4L19 7"
                                           />
                                         </svg>
-                                      }
-                                    >
-                                      <svg
-                                        class="w-4.5 h-4.5"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        viewBox="0 0 24 24"
-                                      >
-                                        <path
-                                          stroke-linecap="round"
-                                          stroke-linejoin="round"
-                                          stroke-width="2"
-                                          d="M5 13l4 4L19 7"
-                                        />
-                                      </svg>
-                                    </Show>
-                                  </StealthButton>
+                                      </Show>
+                                    </StealthButton>
+                                  </StealthTooltip>
                                 </div>
                               </Show>
                             </>
